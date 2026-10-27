@@ -28,6 +28,27 @@ if [ -n "$PID" ]; then
     exit 0
 fi
 
+# Only one start at a time: the cache priming below can take a minute, and the
+# watchdog must not launch a second copy meanwhile. fd 9 is closed for uvicorn,
+# so the lock is released as soon as this script exits.
+exec 9>"$PROJECT_DIR/.start_server.lock"
+if ! flock -n 9; then
+    echo "[$(date)] Another start is already in progress"
+    exit 0
+fi
+
+# Compile PySheds' Numba kernels in a separate, short-lived process when their
+# on-disk cache is missing (fresh venv, or __pycache__ deleted). Compiling them
+# inside the server pushes it past the 512 MiB memory limit and it gets OOM-killed.
+if ! ls "$PROJECT_DIR"/venv/lib/python3*/site-packages/pysheds/__pycache__/*.nbi >/dev/null 2>&1; then
+    echo "[$(date)] Numba kernel cache is cold — compiling it before starting the server (~1 min)..."
+    if "$VENV_PYTHON" -m app.warmup >> "$LOG_FILE" 2>&1; then
+        echo "[$(date)] Kernel cache ready."
+    else
+        echo "[$(date)] WARNING: kernel pre-compilation failed (see $LOG_FILE); starting anyway."
+    fi
+fi
+
 echo "[$(date)] Starting Pond Planning System on http://$HOST:$PORT..."
 
 # Rotate server.log if larger than 20MB to prevent disk exhaustion
@@ -40,7 +61,7 @@ if [ -f "$LOG_FILE" ]; then
 fi
 
 # Run uvicorn in background via nohup with closed stdin
-nohup "$PROJECT_DIR/venv/bin/python3" -m uvicorn app.main:app --host "$HOST" --port "$PORT" </dev/null >> "$LOG_FILE" 2>&1 &
+nohup "$PROJECT_DIR/venv/bin/python3" -m uvicorn app.main:app --host "$HOST" --port "$PORT" </dev/null >> "$LOG_FILE" 2>&1 9>&- &
 NEW_PID=$!
 
 echo "[$(date)] Server started with PID $NEW_PID"

@@ -17,12 +17,14 @@ Docs auto-generated at: /docs
 """
 
 import asyncio
+import logging
 import os
 import time
 import json
 import tempfile
 from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Query
+from app.telemetry import setup_telemetry, get_tracer, METRICS, Status, StatusCode
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from typing import Optional, List, Dict, Any
@@ -114,6 +116,11 @@ app = FastAPI(
     version="1.0.0",
 )
 
+# Initialize OpenTelemetry (Tracing, Metrics, Logs, Prometheus /metrics)
+setup_telemetry(app)
+tracer = get_tracer("bhagiratha.api")
+logger = logging.getLogger("bhagiratha")
+
 # Mount static files for Leaflet frontend
 static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 if not os.path.exists(static_dir):
@@ -135,43 +142,44 @@ def on_startup():
         if is_db_available():
             Base.metadata.create_all(bind=engine)
             DB_IS_AVAILABLE = True
-            print("✓ Connected to PostgreSQL database and initialized PostGIS tables.")
+            logger.info("✓ Connected to PostgreSQL database and initialized PostGIS tables.")
         else:
             DB_IS_AVAILABLE = False
-            print("NOTICE: PostgreSQL is not reachable. Operating in resilient persistent-file mode.")
+            logger.warning("NOTICE: PostgreSQL is not reachable. Operating in resilient persistent-file mode.")
     except Exception as e:
         DB_IS_AVAILABLE = False
-        print(f"NOTICE: Database operating in memory-resilient mode ({e}).")
+        logger.warning(f"NOTICE: Database operating in memory-resilient mode ({e}).")
 
-    # Warm up in the background: the first flow-routing call JIT-compiles PySheds'
-    # Numba kernels (~14 s on the 1-CPU container). Doing it on a tiny synthetic
-    # DEM right after startup makes the first real user request fast.
+    # Warm up in the background on a tiny synthetic DEM so the first real user
+    # request is fast. start_server.sh compiles the Numba kernels beforehand in a
+    # separate process (see app/warmup.py), so here they are only loaded from cache.
     import threading
-    threading.Thread(target=_warm_up_pipeline, daemon=True).start()
+    from app.warmup import warm_up_pipeline
+    threading.Thread(target=warm_up_pipeline, daemon=True).start()
 
     # Background Open-Meteo reachability probe (feeds the rainfall circuit breaker).
     if os.environ.get("BHAGIRATHA_DISABLE_RAINFALL_PROBE") != "1":
         from app.modules.rainfall import probe_loop
         threading.Thread(target=lambda: asyncio.run(probe_loop()), daemon=True).start()
 
+    # Continuous memory management: runs every 25 seconds, aggressively reclaiming
+    # heap fragmentation and returning pages to the 512MB Linux cgroup via malloc_trim(0)
+    from app.memory_guard import release_memory
+    def _memory_reclaim_worker():
+        while True:
+            time.sleep(25)
+            release_memory()
+    threading.Thread(target=_memory_reclaim_worker, daemon=True).start()
 
-def _warm_up_pipeline():
-    try:
-        from app.schemas import BoundingBox
-        from app.modules.area_analysis import generate_terrain_for_bounds
-        from app.modules.dem_from_contours import contours_to_grid
-        t0 = time.time()
-        tmp_dir = tempfile.mkdtemp(prefix="warmup_dem_")
-        tif = os.path.join(tmp_dir, "warmup.tif")
-        generate_terrain_for_bounds(BoundingBox(min_lat=21.0, max_lat=21.01, min_lon=81.0, max_lon=81.01), tif, resolution=40)
-        res = find_pond_site(tif)
-        catchment_to_geojson(res["grid"], res["catchment_mask"])
-        contours_to_grid([{"elevation": float(z), "coordinates": [(81.0 + 0.001 * i, 21.0 + 0.001 * z) for i in range(5)]} for z in range(5)])
-        os.remove(tif)
-        os.rmdir(tmp_dir)
-        print(f"Warm-up complete in {time.time() - t0:.1f}s (terrain kernels compiled).", flush=True)
-    except Exception as e:
-        print(f"NOTICE: warm-up skipped ({e}).", flush=True)
+
+@app.middleware("http")
+async def _memory_guard_middleware(request, call_next):
+    response = await call_next(request)
+    # Reclaim intermediate NumPy/PySheds memory immediately after heavy GIS calls
+    if request.url.path in ("/api/analyze", "/api/analyze-area", "/analyzeContour"):
+        from app.memory_guard import release_memory
+        release_memory()
+    return response
 
 
 @app.get("/")
@@ -217,87 +225,153 @@ async def analyze(req: AnalyzeRequest, db=Depends(_get_db_lazy)):
 
     warnings: list[str] = []
     cache_key = f"{round(req.lat, 3)},{round(req.lon, 3)}"
+    t0 = time.time()
 
-    # 1. Check cache (PostgreSQL or In-Memory)
-    if db is not None:
-        try:
-            from app.db.cache import get_cached_response
-            cached = get_cached_response(db, req.lat, req.lon)
-            if cached is not None:
-                return AnalyzeResponse(**cached)
-        except Exception:
-            pass
-    elif cache_key in IN_MEMORY_CACHE:
-        return AnalyzeResponse(**IN_MEMORY_CACHE[cache_key])
+    with tracer.start_as_current_span("pond.analyze_point") as span:
+        span.set_attribute("geo.lat", req.lat)
+        span.set_attribute("geo.lon", req.lon)
+        if req.village_id is not None:
+            span.set_attribute("village.id", req.village_id)
 
-    # 2. Fire Terrain and Rainfall calls concurrently
-    terrain_task = asyncio.create_task(get_catchment(req.lat, req.lon))
-    rainfall_task = asyncio.create_task(get_rainfall_stats(req.lat, req.lon))
-
-    # 3. Terrain result
-    try:
-        terrain_result, terrain_warnings = await terrain_task
-        warnings.extend(terrain_warnings)
-    except TerrainDataError as e:
-        rainfall_task.cancel()
-        raise HTTPException(status_code=502, detail=f"Terrain data unavailable: {e}")
-
-    # 4. Rainfall result with graceful fallback
-    rainfall_result = None
-    try:
-        rainfall_result = await rainfall_task
-    except RainfallDataError:
-        rainfall_result, note = fallback_rainfall(req.lat, req.lon)
-        warnings.append(note)
-
-    # 5. Recommendation
-    recommendation_result = None
-    if rainfall_result is not None:
-        recommendation_result = recommend(terrain_result, rainfall_result)
-
-    # 6. Persist to DB or In-Memory buffer
-    request_id = _new_request_id()
-    if db is not None:
-        try:
-            from app.db import crud
-            db_request = crud.create_analysis_request(db, lat=req.lat, lon=req.lon, village_id=req.village_id)
-            request_id = db_request.id
-            crud.save_terrain_result(db, request_id, terrain_result)
-            if rainfall_result is not None:
-                crud.save_rainfall_result(db, request_id, rainfall_result)
-            if recommendation_result is not None:
-                crud.save_recommendation(db, request_id, recommendation_result)
-        except Exception as e:
-            print(f"Database write skipped: {e}")
-
-    # Record in in-memory history
-    _record_analysis(request_id, req.village_id, req.lat, req.lon, terrain_result, recommendation_result)
-
-    response = AnalyzeResponse(
-        request_id=request_id,
-        lat=req.lat,
-        lon=req.lon,
-        terrain=terrain_result,
-        rainfall=rainfall_result,
-        recommendation=recommendation_result,
-        warnings=warnings,
-    )
-
-    # Cache only full-quality results. A note that bundled REAL archive rainfall was
-    # used is not a degradation (same data as a live query), so it doesn't block caching;
-    # baseline rainfall or a truncated catchment does, so those get recomputed later.
-    if all(w.startswith(BUNDLED_RAINFALL_NOTE_PREFIX) for w in warnings):
+        # 1. Check cache (PostgreSQL or In-Memory)
         if db is not None:
             try:
-                from app.db.cache import set_cached_response
-                set_cached_response(db, req.lat, req.lon, response.model_dump())
+                from app.db.cache import get_cached_response
+                cached = get_cached_response(db, req.lat, req.lon)
+                if cached is not None:
+                    span.set_attribute("cache.hit", True)
+                    span.set_attribute("cache.type", "postgresql")
+                    if isinstance(cached.get("terrain"), dict) and "area_km2" in cached["terrain"]:
+                        span.set_attribute("terrain.area_km2", cached["terrain"]["area_km2"])
+                    if METRICS and METRICS.cache_operations_total:
+                        METRICS.cache_operations_total.add(1, {"backend": "db", "result": "hit"})
+                        METRICS.analyses_total.add(1, {"mode": "point", "status": "cached"})
+                    logger.info(f"Point analysis cache HIT (DB): lat={req.lat}, lon={req.lon}")
+                    return AnalyzeResponse(**cached)
             except Exception:
                 pass
-        if len(IN_MEMORY_CACHE) >= MAX_CACHE_ENTRIES:
-            IN_MEMORY_CACHE.pop(next(iter(IN_MEMORY_CACHE)))  # evict oldest (dicts keep insertion order)
-        IN_MEMORY_CACHE[cache_key] = response.model_dump()
+        elif cache_key in IN_MEMORY_CACHE:
+            mem_cached = IN_MEMORY_CACHE[cache_key]
+            span.set_attribute("cache.hit", True)
+            span.set_attribute("cache.type", "in_memory")
+            if isinstance(mem_cached.get("terrain"), dict) and "area_km2" in mem_cached["terrain"]:
+                span.set_attribute("terrain.area_km2", mem_cached["terrain"]["area_km2"])
+            if METRICS and METRICS.cache_operations_total:
+                METRICS.cache_operations_total.add(1, {"backend": "memory", "result": "hit"})
+                METRICS.analyses_total.add(1, {"mode": "point", "status": "cached"})
+            logger.info(f"Point analysis cache HIT (Memory): lat={req.lat}, lon={req.lon}")
+            return AnalyzeResponse(**mem_cached)
 
-    return response
+        span.set_attribute("cache.hit", False)
+        if METRICS and METRICS.cache_operations_total:
+            METRICS.cache_operations_total.add(1, {"backend": "db" if db else "memory", "result": "miss"})
+
+        # 2. Fire Terrain and Rainfall calls concurrently
+        terrain_task = asyncio.create_task(get_catchment(req.lat, req.lon))
+        rainfall_task = asyncio.create_task(get_rainfall_stats(req.lat, req.lon))
+
+        # 3. Terrain result
+        try:
+            terrain_result, terrain_warnings = await terrain_task
+            warnings.extend(terrain_warnings)
+        except TerrainDataError as e:
+            rainfall_task.cancel()
+            span.record_exception(e)
+            span.set_status(Status(StatusCode.ERROR, str(e)))
+            if METRICS and METRICS.analyses_total:
+                METRICS.analyses_total.add(1, {"mode": "point", "status": "error"})
+            logger.error(f"Point analysis terrain error: {e}")
+            raise HTTPException(status_code=502, detail=f"Terrain data unavailable: {e}")
+
+        # 4. Rainfall result with graceful fallback
+        rainfall_result = None
+        try:
+            rainfall_result = await rainfall_task
+        except RainfallDataError:
+            rainfall_result, note = fallback_rainfall(req.lat, req.lon)
+            warnings.append(note)
+
+        # 5. Recommendation
+        recommendation_result = None
+        if rainfall_result is not None:
+            recommendation_result = recommend(terrain_result, rainfall_result)
+
+        # 6. Persist to DB or In-Memory buffer
+        request_id = _new_request_id()
+        if db is not None:
+            try:
+                from app.db import crud
+                db_request = crud.create_analysis_request(db, lat=req.lat, lon=req.lon, village_id=req.village_id)
+                request_id = db_request.id
+                crud.save_terrain_result(db, request_id, terrain_result)
+                if rainfall_result is not None:
+                    crud.save_rainfall_result(db, request_id, rainfall_result)
+                if recommendation_result is not None:
+                    crud.save_recommendation(db, request_id, recommendation_result)
+            except Exception as e:
+                logger.warning(f"Database write skipped: {e}")
+
+        # Record in in-memory history
+        _record_analysis(request_id, req.village_id, req.lat, req.lon, terrain_result, recommendation_result)
+
+        response = AnalyzeResponse(
+            request_id=request_id,
+            lat=req.lat,
+            lon=req.lon,
+            terrain=terrain_result,
+            rainfall=rainfall_result,
+            recommendation=recommendation_result,
+            warnings=warnings,
+        )
+
+        # Cache only full-quality results
+        if all(w.startswith(BUNDLED_RAINFALL_NOTE_PREFIX) for w in warnings):
+            if db is not None:
+                try:
+                    from app.db.cache import set_cached_response
+                    set_cached_response(db, req.lat, req.lon, response.model_dump())
+                    if METRICS and METRICS.cache_operations_total:
+                        METRICS.cache_operations_total.add(1, {"backend": "db", "result": "set"})
+                except Exception:
+                    pass
+            if len(IN_MEMORY_CACHE) >= MAX_CACHE_ENTRIES:
+                IN_MEMORY_CACHE.pop(next(iter(IN_MEMORY_CACHE)))
+            IN_MEMORY_CACHE[cache_key] = response.model_dump()
+            if METRICS and METRICS.cache_operations_total:
+                METRICS.cache_operations_total.add(1, {"backend": "memory", "result": "set"})
+
+        duration = time.time() - t0
+        span.set_attribute("pond.duration_seconds", round(duration, 3))
+        span.set_attribute("terrain.area_km2", terrain_result.area_km2)
+        span.set_attribute("terrain.avg_slope", terrain_result.avg_slope)
+        if recommendation_result is not None:
+            span.set_attribute("recommendation.runoff_m3", recommendation_result.runoff_m3)
+            span.set_attribute("recommendation.depth_m", recommendation_result.depth_m)
+            span.set_attribute("recommendation.capacity_m3", recommendation_result.capacity_m3)
+            span.set_attribute("recommendation.suitability_score", recommendation_result.suitability_score)
+
+        if METRICS:
+            if METRICS.analyses_total:
+                METRICS.analyses_total.add(1, {"mode": "point", "status": "success"})
+            if METRICS.analysis_duration:
+                METRICS.analysis_duration.record(duration, {"mode": "point"})
+            if METRICS.catchment_area:
+                METRICS.catchment_area.record(terrain_result.area_km2, {"mode": "point"})
+            if recommendation_result is not None:
+                if METRICS.runoff_volume:
+                    METRICS.runoff_volume.record(recommendation_result.runoff_m3)
+                if METRICS.pond_capacity:
+                    METRICS.pond_capacity.record(recommendation_result.capacity_m3)
+                if METRICS.pond_depth:
+                    METRICS.pond_depth.record(recommendation_result.depth_m)
+                if METRICS.suitability_score:
+                    METRICS.suitability_score.record(recommendation_result.suitability_score)
+
+        logger.info(
+            f"Point analysis succeeded: lat={req.lat}, lon={req.lon}, area={terrain_result.area_km2}km2, "
+            f"runoff={recommendation_result.runoff_m3 if recommendation_result else 0}m3, duration={duration:.2f}s"
+        )
+        return response
 
 
 @app.get("/api/analyze/{request_id}", response_model=AnalyzeResponse)
@@ -374,13 +448,55 @@ async def analyze_area_endpoint(req: AnalyzeAreaRequest):
     """
     if req.bounds.min_lat >= req.bounds.max_lat or req.bounds.min_lon >= req.bounds.max_lon:
         raise HTTPException(status_code=422, detail="Bounds must satisfy min_lat < max_lat and min_lon < max_lon.")
-    res = await analyze_land_area(req.bounds)
-    _record_analysis(
-        _new_request_id(), None, res.suggested_pond_site.lat, res.suggested_pond_site.lon,
-        TerrainResult(catchment_polygon={}, area_km2=res.catchment_area_km2, avg_slope=res.avg_slope_percent),
-        res.recommendation,
-    )
-    return res
+
+    t0 = time.time()
+    with tracer.start_as_current_span("pond.analyze_area") as span:
+        span.set_attribute("bounds.min_lat", req.bounds.min_lat)
+        span.set_attribute("bounds.max_lat", req.bounds.max_lat)
+        span.set_attribute("bounds.min_lon", req.bounds.min_lon)
+        span.set_attribute("bounds.max_lon", req.bounds.max_lon)
+
+        try:
+            res = await analyze_land_area(req.bounds)
+        except Exception as e:
+            span.record_exception(e)
+            span.set_status(Status(StatusCode.ERROR, str(e)))
+            if METRICS and METRICS.analyses_total:
+                METRICS.analyses_total.add(1, {"mode": "area", "status": "error"})
+            logger.error(f"Area analysis error: {e}")
+            raise
+
+        _record_analysis(
+            _new_request_id(), None, res.suggested_pond_site.lat, res.suggested_pond_site.lon,
+            TerrainResult(catchment_polygon={}, area_km2=res.catchment_area_km2, avg_slope=res.avg_slope_percent),
+            res.recommendation,
+        )
+
+        duration = time.time() - t0
+        span.set_attribute("suggested_site.lat", res.suggested_pond_site.lat)
+        span.set_attribute("suggested_site.lon", res.suggested_pond_site.lon)
+        span.set_attribute("catchment.area_km2", res.catchment_area_km2)
+        span.set_attribute("terrain.avg_slope", res.avg_slope_percent)
+        span.set_attribute("recommendation.runoff_m3", res.expected_water_volume_m3)
+        span.set_attribute("recommendation.suitability_score", res.recommendation.suitability_score)
+
+        if METRICS:
+            if METRICS.analyses_total:
+                METRICS.analyses_total.add(1, {"mode": "area", "status": "success"})
+            if METRICS.analysis_duration:
+                METRICS.analysis_duration.record(duration, {"mode": "area"})
+            if METRICS.catchment_area:
+                METRICS.catchment_area.record(res.catchment_area_km2, {"mode": "area"})
+            if METRICS.runoff_volume:
+                METRICS.runoff_volume.record(res.expected_water_volume_m3)
+            if METRICS.suitability_score:
+                METRICS.suitability_score.record(res.recommendation.suitability_score)
+
+        logger.info(
+            f"Area analysis succeeded: site=({res.suggested_pond_site.lat:.4f}, {res.suggested_pond_site.lon:.4f}), "
+            f"area={res.catchment_area_km2}km2, score={res.recommendation.suitability_score}, duration={duration:.2f}s"
+        )
+        return res
 
 
 # ---------- Contour Map Upload Analysis ----------
@@ -398,66 +514,115 @@ async def analyze_contour(contour_map: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="File must be a .kml or .kmz contour map.")
 
     file_bytes = await contour_map.read()
+    t0 = time.time()
 
-    # Steps 1-5 (parse, interpolate, route flow, pick site, polygonize) are CPU- and
-    # memory-heavy, so they run as ONE job in the single heavy-job slot: on the
-    # 512 MiB / 1-CPU container two overlapping jobs were OOM-killed (see heavy_jobs.py).
-    try:
-        job = await run_heavy(_contour_job, file_bytes, filename)
-    except ContourParseError as e:
-        raise HTTPException(status_code=400, detail=f"Could not parse contour file: {e}")
-    except InterpolationError as e:
-        raise HTTPException(status_code=422, detail=f"Could not build a terrain grid from this file: {e}")
-    except ServerBusyError:
-        raise
-    except Exception:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail="Terrain analysis failed on this contour map.")
-    contours_count, elevations, result, polygon = job["count"], job["elevations"], job["result"], job["polygon"]
+    with tracer.start_as_current_span("pond.analyze_contour") as span:
+        span.set_attribute("contour.filename", filename)
+        span.set_attribute("contour.size_bytes", len(file_bytes))
 
-    if result.get("touches_edge"):
-        warnings.append(
-            "The catchment reaches the edge of the uploaded contour map, so the true upstream "
-            "area may be larger than reported — treat catchment area and runoff as lower bounds."
+        try:
+            job = await run_heavy(_contour_job, file_bytes, filename)
+        except ContourParseError as e:
+            span.record_exception(e)
+            span.set_status(Status(StatusCode.ERROR, str(e)))
+            if METRICS and METRICS.analyses_total:
+                METRICS.analyses_total.add(1, {"mode": "contour", "status": "error_parse"})
+            raise HTTPException(status_code=400, detail=f"Could not parse contour file: {e}")
+        except InterpolationError as e:
+            span.record_exception(e)
+            span.set_status(Status(StatusCode.ERROR, str(e)))
+            if METRICS and METRICS.analyses_total:
+                METRICS.analyses_total.add(1, {"mode": "contour", "status": "error_interpolation"})
+            raise HTTPException(status_code=422, detail=f"Could not build a terrain grid from this file: {e}")
+        except ServerBusyError:
+            span.set_attribute("contour.server_busy", True)
+            raise
+        except Exception as e:
+            span.record_exception(e)
+            span.set_status(Status(StatusCode.ERROR, str(e)))
+            if METRICS and METRICS.analyses_total:
+                METRICS.analyses_total.add(1, {"mode": "contour", "status": "error_server"})
+            import traceback
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail="Terrain analysis failed on this contour map.")
+
+        contours_count, elevations, result, polygon = job["count"], job["elevations"], job["result"], job["polygon"]
+
+        elev_min = min(elevations) if elevations else 0
+        elev_max = max(elevations) if elevations else 0
+        span.set_attribute("contour.line_count", contours_count)
+        span.set_attribute("elevation.min_m", elev_min)
+        span.set_attribute("elevation.max_m", elev_max)
+        span.set_attribute("suggested_site.lat", result["pour_lat"])
+        span.set_attribute("suggested_site.lon", result["pour_lon"])
+        span.set_attribute("catchment.area_km2", result["area_km2"])
+
+        if METRICS and METRICS.contour_lines:
+            METRICS.contour_lines.record(contours_count)
+
+        if result.get("touches_edge"):
+            warnings.append(
+                "The catchment reaches the edge of the uploaded contour map, so the true upstream "
+                "area may be larger than reported — treat catchment area and runoff as lower bounds."
+            )
+        if result["area_km2"] == 0:
+            warnings.append(
+                "Catchment area came back as zero — the auto-selected point may not sit on a "
+                "clear drainage path in this terrain."
+            )
+
+        # Step 6: Compute rainfall & recommendation for the auto-discovered pond site
+        from app.modules.rainfall import get_rainfall_stats, RainfallDataError, fallback_rainfall
+        try:
+            rainfall_result = await get_rainfall_stats(result["pour_lat"], result["pour_lon"])
+        except RainfallDataError:
+            rainfall_result, note = fallback_rainfall(result["pour_lat"], result["pour_lon"])
+            warnings.append(note)
+
+        from app.modules.recommendation import recommend
+        terrain_res = TerrainResult(
+            catchment_polygon=polygon,
+            area_km2=result["area_km2"],
+            avg_slope=result["avg_slope"],
         )
-    if result["area_km2"] == 0:
-        warnings.append(
-            "Catchment area came back as zero — the auto-selected point may not sit on a "
-            "clear drainage path in this terrain."
+        rec_result = recommend(terrain_res, rainfall_result)
+
+        _record_analysis(_new_request_id(), None, result["pour_lat"], result["pour_lon"], terrain_res, rec_result)
+
+        duration = time.time() - t0
+        span.set_attribute("pond.duration_seconds", round(duration, 3))
+        span.set_attribute("recommendation.runoff_m3", rec_result.runoff_m3)
+        span.set_attribute("recommendation.suitability_score", rec_result.suitability_score)
+
+        if METRICS:
+            if METRICS.analyses_total:
+                METRICS.analyses_total.add(1, {"mode": "contour", "status": "success"})
+            if METRICS.analysis_duration:
+                METRICS.analysis_duration.record(duration, {"mode": "contour"})
+            if METRICS.catchment_area:
+                METRICS.catchment_area.record(result["area_km2"], {"mode": "contour"})
+            if METRICS.runoff_volume:
+                METRICS.runoff_volume.record(rec_result.runoff_m3)
+            if METRICS.suitability_score:
+                METRICS.suitability_score.record(rec_result.suitability_score)
+
+        logger.info(
+            f"Contour analysis completed for {filename}: {contours_count} lines, runoff={rec_result.runoff_m3}m3, duration={duration:.2f}s"
         )
 
-    # Step 6: Compute rainfall & recommendation for the auto-discovered pond site
-    from app.modules.rainfall import get_rainfall_stats, RainfallDataError, fallback_rainfall
-    try:
-        rainfall_result = await get_rainfall_stats(result["pour_lat"], result["pour_lon"])
-    except RainfallDataError:
-        rainfall_result, note = fallback_rainfall(result["pour_lat"], result["pour_lon"])
-        warnings.append(note)
-
-    from app.modules.recommendation import recommend
-    terrain_res = TerrainResult(
-        catchment_polygon=polygon,
-        area_km2=result["area_km2"],
-        avg_slope=result["avg_slope"],
-    )
-    rec_result = recommend(terrain_res, rainfall_result)
-
-    _record_analysis(_new_request_id(), None, result["pour_lat"], result["pour_lon"], terrain_res, rec_result)
-
-    return ContourAnalysisResponse(
-        source_filename=filename,
-        contour_lines_parsed=contours_count,
-        elevation_range_m={"min": min(elevations), "max": max(elevations)},
-        suggested_pond_site=PondSite(lat=result["pour_lat"], lon=result["pour_lon"]),
-        catchment_area_km2=result["area_km2"],
-        avg_slope_percent=result["avg_slope"],
-        catchment_polygon=polygon,
-        expected_water_volume_m3=rec_result.runoff_m3,
-        rainfall=rainfall_result,
-        recommendation=rec_result,
-        warnings=warnings,
-    )
+        return ContourAnalysisResponse(
+            source_filename=filename,
+            contour_lines_parsed=contours_count,
+            elevation_range_m={"min": elev_min, "max": elev_max},
+            suggested_pond_site=PondSite(lat=result["pour_lat"], lon=result["pour_lon"]),
+            catchment_area_km2=result["area_km2"],
+            avg_slope_percent=result["avg_slope"],
+            catchment_polygon=polygon,
+            expected_water_volume_m3=rec_result.runoff_m3,
+            rainfall=rainfall_result,
+            recommendation=rec_result,
+            warnings=warnings,
+        )
 
 
 # ---------- Bundled sample data (used by the "Load Sample Demo" button) ----------
@@ -477,36 +642,46 @@ async def sample_contour():
 
 def _contour_job(file_bytes: bytes, filename: str) -> dict:
     """Synchronous contour pipeline, run in a worker thread under run_heavy()."""
-    contours = parse_contours(file_bytes, filename)
-    elevations = [c["elevation"] for c in contours]
-    count = len(contours)
-    grid_data = contours_to_grid(contours)
-    del contours
-    tmp_dir = tempfile.mkdtemp(prefix="contour_dem_")
-    tif_path = os.path.join(tmp_dir, "dem.tif")
-    try:
-        write_grid_to_geotiff(grid_data, tif_path)
-        del grid_data
-        result = find_pond_site(tif_path)
-        polygon = catchment_to_geojson(result["grid"], result["catchment_mask"])
-    finally:
+    with tracer.start_as_current_span("contour.pipeline") as span:
+        span.set_attribute("contour.filename", filename)
+        span.set_attribute("contour.size_bytes", len(file_bytes))
+        contours = parse_contours(file_bytes, filename)
+        elevations = [c["elevation"] for c in contours]
+        count = len(contours)
+        span.set_attribute("contour.line_count", count)
+        span.add_event("contours_parsed", {"count": count})
+        grid_data = contours_to_grid(contours)
+        span.add_event("grid_interpolated")
+        del contours
+        tmp_dir = tempfile.mkdtemp(prefix="contour_dem_")
+        tif_path = os.path.join(tmp_dir, "dem.tif")
         try:
-            if os.path.exists(tif_path):
-                os.remove(tif_path)
-            os.rmdir(tmp_dir)
-        except OSError:
-            pass
-    # Keep only what the response needs; drop the grid/flow rasters now.
-    slim = {k: result[k] for k in ("pour_lat", "pour_lon", "area_km2", "avg_slope", "touches_edge")}
-    return {"count": count, "elevations": elevations, "result": slim, "polygon": polygon}
+            write_grid_to_geotiff(grid_data, tif_path)
+            del grid_data
+            result = find_pond_site(tif_path)
+            span.add_event("pond_site_selected", {"pour_lat": result["pour_lat"], "pour_lon": result["pour_lon"]})
+            polygon = catchment_to_geojson(result["grid"], result["catchment_mask"])
+        finally:
+            try:
+                if os.path.exists(tif_path):
+                    os.remove(tif_path)
+                os.rmdir(tmp_dir)
+            except OSError:
+                pass
+        # Keep only what the response needs; drop the grid/flow rasters now.
+        slim = {k: result[k] for k in ("pour_lat", "pour_lon", "area_km2", "avg_slope", "touches_edge")}
+        return {"count": count, "elevations": elevations, "result": slim, "polygon": polygon}
 
 
 # ---------- Village Search & History ----------
 
 @app.get("/api/villages/search", response_model=VillageSearchResponse)
 async def search_village_endpoint(q: str = Query("", description="Village or district name")):
-    results = await search_villages(q)
-    return VillageSearchResponse(query=q, results=results)
+    with tracer.start_as_current_span("village.search") as span:
+        span.set_attribute("search.query", q)
+        results = await search_villages(q)
+        span.set_attribute("search.results_count", len(results))
+        return VillageSearchResponse(query=q, results=results)
 
 
 @app.get("/api/villages/{village_id}/history")

@@ -13,3 +13,12 @@ python-dotenv
 lxml
 python-multipart
 scipy
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-instrumentation-fastapi
+opentelemetry-instrumentation-httpx
+opentelemetry-instrumentation-sqlalchemy
+opentelemetry-instrumentation-logging
+opentelemetry-exporter-otlp-proto-http
+opentelemetry-exporter-prometheus
+prometheus-client

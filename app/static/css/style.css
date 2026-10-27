@@ -1234,3 +1234,171 @@ body {
 .popup-table td strong {
   color: #fff;
 }
+
+/* ---------------- OpenTelemetry Modal & Dashboard ---------------- */
+.telemetry-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.otel-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+.otel-card {
+  background: rgba(15, 23, 42, 0.7);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.otel-card-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+.otel-card-val {
+  font-family: var(--font-heading);
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.otel-card-val.text-success {
+  color: #10b981;
+}
+
+.otel-card-sub {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.otel-link {
+  color: var(--accent-cyan);
+  text-decoration: none;
+}
+
+.otel-link:hover {
+  text-decoration: underline;
+}
+
+.otel-ui-links {
+  display: flex;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.otel-link-pill {
+  display: inline-block;
+  padding: 2px 8px;
+  background: rgba(6, 182, 212, 0.15);
+  border: 1px solid rgba(6, 182, 212, 0.3);
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--accent-cyan);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.otel-link-pill:hover {
+  background: rgba(6, 182, 212, 0.3);
+}
+
+.otel-table-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 6px;
+}
+
+.otel-table-header h4 {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.otel-table-wrap {
+  max-height: 380px;
+  overflow-y: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: rgba(10, 15, 29, 0.5);
+}
+
+.otel-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.otel-table th {
+  background: rgba(30, 41, 59, 0.8);
+  padding: 10px 12px;
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.otel-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  vertical-align: top;
+}
+
+.otel-table tr:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.span-tag {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+  border: 1px solid rgba(59, 130, 246, 0.3);
+}
+
+.span-id-code {
+  font-family: monospace;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.span-status-ok {
+  color: #10b981;
+  font-weight: 600;
+}
+
+.span-status-err {
+  color: #ef4444;
+  font-weight: 600;
+}
+
+.span-attrs-preview {
+  font-family: monospace;
+  font-size: 10px;
+  color: var(--text-muted);
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

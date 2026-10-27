@@ -319,6 +319,12 @@ document.addEventListener("DOMContentLoaded", () => {
       document.getElementById("history-modal").style.display = "none";
     });
 
+    document.getElementById("telemetry-modal-btn").addEventListener("click", openTelemetryModal);
+    document.getElementById("close-telemetry-modal").addEventListener("click", () => {
+      document.getElementById("telemetry-modal").style.display = "none";
+    });
+    document.getElementById("refresh-telemetry-btn").addEventListener("click", fetchAndRenderSpans);
+
     document.getElementById("guide-modal-btn").addEventListener("click", () => {
       document.getElementById("guide-modal").style.display = "flex";
     });
@@ -754,6 +760,66 @@ document.addEventListener("DOMContentLoaded", () => {
     } catch (err) {
       container.innerHTML = `<p style="color: #ef4444; font-size: 12px;">Could not load history: ${err.message}</p>`;
     }
+  }
+
+  // -------------------------------------------------------------
+  // OpenTelemetry Observability Modal
+  // -------------------------------------------------------------
+  async function openTelemetryModal() {
+    const modal = document.getElementById("telemetry-modal");
+    modal.style.display = "flex";
+    await fetchAndRenderSpans();
+  }
+
+  async function fetchAndRenderSpans() {
+    const tbody = document.getElementById("otel-spans-tbody");
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--accent-cyan); padding: 18px;">🔄 Fetching latest OpenTelemetry spans...</td></tr>';
+
+    try {
+      const resp = await fetch("/api/telemetry/spans?limit=50");
+      const data = await resp.json();
+
+      if (!data.spans || data.spans.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--text-muted); padding: 20px;">No spans recorded yet. Trigger a point analysis, land area selection, or contour map analysis to observe live traces.</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = data.spans.map((s) => {
+        const isError = s.status === "ERROR";
+        const statusHtml = isError
+          ? '<span class="span-status-err">● ERROR</span>'
+          : '<span class="span-status-ok">● OK</span>';
+
+        const traceShort = s.trace_id ? s.trace_id.substring(0, 16) + "..." : "-";
+        const spanShort = s.span_id ? s.span_id.substring(0, 12) + "..." : "-";
+
+        const attrsList = Object.entries(s.attributes || {})
+          .map(([k, v]) => `${k}=${typeof v === "number" ? (v % 1 !== 0 ? v.toFixed(3) : v) : v}`)
+          .join(" | ");
+
+        return `
+          <tr>
+            <td><span class="span-tag">${escapeHtml(s.name)}</span></td>
+            <td><code class="span-id-code" title="${s.trace_id}">${traceShort}</code></td>
+            <td><code class="span-id-code" title="${s.span_id}">${spanShort}</code></td>
+            <td><strong>${s.duration_ms} ms</strong></td>
+            <td>${statusHtml}</td>
+            <td><div class="span-attrs-preview" title="${escapeHtml(attrsList)}">${escapeHtml(attrsList || "none")}</div></td>
+          </tr>
+        `;
+      }).join("");
+    } catch (err) {
+      tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: #ef4444; padding: 18px;">Error loading telemetry: ${err.message}</td></tr>`;
+    }
+  }
+
+  function escapeHtml(str) {
+    if (!str) return "";
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
   }
 
   // -------------------------------------------------------------

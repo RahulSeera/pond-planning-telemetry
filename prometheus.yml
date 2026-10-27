@@ -1,0 +1,13 @@
+# Prometheus Configuration for Bhagiratha Pond Planning System Observability
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: "bhagiratha_pond_app"
+    metrics_path: "/metrics"
+    static_configs:
+      - targets: ["host.docker.internal:3000", "localhost:3000"]
+        labels:
+          service: "bhagiratha-pond-planning"
+          env: "production"

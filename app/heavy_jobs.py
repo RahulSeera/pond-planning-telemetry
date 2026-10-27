@@ -14,6 +14,10 @@ up. Light requests (health, cache hits, search) never enter the queue.
 import asyncio
 import gc
 import os
+import time
+
+from app.telemetry import get_tracer, METRICS
+from app.memory_guard import release_memory, is_memory_critical
 
 HEAVY_SLOTS = max(1, int(os.environ.get("BHAGIRATHA_HEAVY_SLOTS", "1")))
 QUEUE_TIMEOUT_S = float(os.environ.get("BHAGIRATHA_QUEUE_TIMEOUT_S", "120"))
@@ -24,7 +28,7 @@ _waiting = 0
 
 
 class ServerBusyError(Exception):
-    """Raised when a heavy job could not get a slot within QUEUE_TIMEOUT_S."""
+    """Raised when a heavy job could not get a slot within QUEUE_TIMEOUT_S or memory is critical."""
 
 
 def _semaphore() -> asyncio.Semaphore:
@@ -40,19 +44,40 @@ def queue_depth() -> int:
 
 
 async def run_heavy(fn, *args):
-    """Run fn(*args) in a worker thread once a heavy-job slot is free."""
+    """Run fn(*args) in a worker thread once a heavy-job slot is free and memory is safe."""
     global _waiting
-    sem = _semaphore()
-    _waiting += 1
-    try:
-        await asyncio.wait_for(sem.acquire(), timeout=QUEUE_TIMEOUT_S)
-    except asyncio.TimeoutError:
-        raise ServerBusyError(f"Server busy: no analysis slot free within {QUEUE_TIMEOUT_S:.0f} s.")
-    finally:
-        _waiting -= 1
-    try:
-        return await asyncio.to_thread(fn, *args)
-    finally:
-        sem.release()
-        # Return large intermediate arrays promptly so the next job starts from a low baseline.
-        gc.collect()
+    tracer = get_tracer("bhagiratha.heavy_jobs")
+    fn_name = getattr(fn, "__name__", str(fn))
+
+    with tracer.start_as_current_span(f"heavy_job.{fn_name}") as span:
+        span.set_attribute("heavy_job.function", fn_name)
+        span.set_attribute("heavy_job.queue_waiting", _waiting)
+
+        # Proactive memory circuit breaker: if container memory is near ceiling, shed load
+        if is_memory_critical(threshold_pct=0.88):
+            span.set_attribute("heavy_job.rejected_oom_protection", True)
+            raise ServerBusyError("Server memory is currently high; request deferred to protect system stability. Please retry in 10s.")
+
+        sem = _semaphore()
+        _waiting += 1
+        try:
+            await asyncio.wait_for(sem.acquire(), timeout=QUEUE_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            span.set_attribute("heavy_job.timeout", True)
+            raise ServerBusyError(f"Server busy: no analysis slot free within {QUEUE_TIMEOUT_S:.0f} s.")
+        finally:
+            _waiting -= 1
+
+        try:
+            t0 = time.time()
+            result = await asyncio.to_thread(fn, *args)
+            duration = time.time() - t0
+            span.set_attribute("heavy_job.duration_seconds", round(duration, 3))
+            if METRICS and METRICS.heavy_jobs_duration:
+                METRICS.heavy_jobs_duration.record(duration, {"function": fn_name})
+            return result
+        finally:
+            sem.release()
+            # Immediately reclaim Python heap and force glibc malloc_trim
+            # so memory is returned directly to the Linux kernel/cgroup.
+            release_memory()

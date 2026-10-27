@@ -19,6 +19,7 @@ from app.schemas import TerrainResult
 from app.modules.dem_fetch import fetch_dem_tile
 from app.heavy_jobs import run_heavy, ServerBusyError
 from app.modules.catchment import delineate_catchment, catchment_to_geojson
+from app.telemetry import get_tracer
 
 
 # DEM half-widths (degrees) tried in order: if the catchment still reaches the
@@ -39,40 +40,45 @@ async def get_catchment(lat: float, lon: float) -> tuple[TerrainResult, list[str
 
     Raises: TerrainDataError if the DEM can't be fetched/processed.
     """
-    warnings: list[str] = []
-    for attempt, buffer_deg in enumerate(DEM_BUFFERS_DEG):
-        # Unique temp file per request — a shared fixed path would let two concurrent
-        # requests overwrite each other's DEM mid-analysis.
-        fd, dem_path = tempfile.mkstemp(prefix="point_dem_", suffix=".tif")
-        os.close(fd)
-        try:
-            await fetch_dem_tile(lat, lon, buffer_deg=buffer_deg, out_path=dem_path)
-
-            # delineate_catchment is CPU-bound (flow routing over the whole tile), so it
-            # runs in a worker thread to keep the event loop responsive.
+    tracer = get_tracer("bhagiratha.terrain")
+    with tracer.start_as_current_span("terrain.get_catchment") as span:
+        span.set_attribute("geo.lat", lat)
+        span.set_attribute("geo.lon", lon)
+        warnings: list[str] = []
+        for attempt, buffer_deg in enumerate(DEM_BUFFERS_DEG):
+            span.add_event("attempt_dem_fetch", {"attempt": attempt, "buffer_deg": buffer_deg})
+            fd, dem_path = tempfile.mkstemp(prefix="point_dem_", suffix=".tif")
+            os.close(fd)
             try:
-                result = await run_heavy(delineate_catchment, dem_path, lat, lon)
-            except ServerBusyError:
-                raise
-            except Exception as e:
-                raise TerrainDataError(f"Catchment computation failed: {e}")
-            polygon = catchment_to_geojson(result["grid"], result["catchment_mask"])
-        finally:
-            try:
-                os.remove(dem_path)
-            except OSError:
-                pass
+                await fetch_dem_tile(lat, lon, buffer_deg=buffer_deg, out_path=dem_path)
+                try:
+                    result = await run_heavy(delineate_catchment, dem_path, lat, lon)
+                except ServerBusyError:
+                    raise
+                except Exception as e:
+                    span.record_exception(e)
+                    raise TerrainDataError(f"Catchment computation failed: {e}")
+                polygon = catchment_to_geojson(result["grid"], result["catchment_mask"])
+            finally:
+                try:
+                    os.remove(dem_path)
+                except OSError:
+                    pass
 
-        if not result["touches_edge"]:
-            break
-        if attempt == len(DEM_BUFFERS_DEG) - 1:
-            warnings.append(TRUNCATED_WARNING)
+            if not result["touches_edge"]:
+                break
+            if attempt == len(DEM_BUFFERS_DEG) - 1:
+                warnings.append(TRUNCATED_WARNING)
 
-    return TerrainResult(
-        catchment_polygon=polygon,
-        area_km2=result["area_km2"],
-        avg_slope=result["avg_slope"],
-    ), warnings
+        span.set_attribute("terrain.area_km2", result["area_km2"])
+        span.set_attribute("terrain.avg_slope", result["avg_slope"])
+        span.set_attribute("terrain.touches_edge", result["touches_edge"])
+
+        return TerrainResult(
+            catchment_polygon=polygon,
+            area_km2=result["area_km2"],
+            avg_slope=result["avg_slope"],
+        ), warnings
 
 
 class TerrainDataError(Exception):

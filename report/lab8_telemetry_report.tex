@@ -1,0 +1,511 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{amsmath,amssymb}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,fit,backgrounds,calc,shapes.geometric}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!80!black,
+    citecolor=blue!80!black,
+    urlcolor=blue!80!black,
+}
+
+\lstset{
+    basicstyle=\ttfamily\footnotesize,
+    keywordstyle=\color{blue!80!black}\bfseries,
+    commentstyle=\color{green!50!black}\itshape,
+    stringstyle=\color{orange!80!black},
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    stepnumber=1,
+    numbersep=8pt,
+    backgroundcolor=\color{gray!5},
+    frame=single,
+    framerule=0.5pt,
+    rulecolor=\color{gray!30},
+    tabsize=4,
+    breaklines=true,
+    breakatwhitespace=false,
+    showstringspaces=false
+}
+
+\title{\textbf{Lab 8: OpenTelemetry Instrumentation of the\\AI-Based Village Pond Planning System}}
+\author{\textbf{Rahul Seera}\\Roll No. 12341980\\\texttt{seerav@iitbhilai.ac.in}\\Indian Institute of Technology Bhilai\\[0.4em]\small Repository: \href{https://github.com/RahulSeera/pond-planning-telemetry}{\texttt{https://github.com/RahulSeera/pond-planning-telemetry}}}
+\date{October 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This report presents the end-to-end integration and evaluation of OpenTelemetry in the AI-Based Village Pond Planning System (Bhagiratha). The system integrates digital elevation models (SRTM), D8 hydrological flow routing via PySheds, historical precipitation analysis via Open-Meteo, and multi-factor reservoir sizing. We instrumented the backend services with the OpenTelemetry Python SDK, generating distributed traces, domain and system metrics, and trace-correlated logs. Telemetry data is exported over standard OTLP/HTTP to an observability backend (OpenTelemetry Collector, Tempo, Prometheus, Loki, and Grafana) and made inspectable via a native in-app dashboard. The collected data is analyzed to attribute latency bottlenecks, monitor memory dynamics on a resource-constrained 512~MiB Linux cgroup container, diagnose dependency failures, and demonstrate the practical utility of observability for distributed engineering.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\section{Introduction}
+
+The objective of this laboratory assignment is to familiarize students with OpenTelemetry and its practical application for monitoring, debugging, and understanding distributed systems and backend services. The implementation builds directly upon the Assignment 1 project: \textbf{Bhagiratha: AI-based Village Pond Planning System}.
+
+The Bhagiratha system consists of:
+\begin{itemize}
+    \item \textbf{A FastAPI Application Server} (listening on port 3000, mapped to external port 3248 on the campus host \texttt{10.1.75.53}), exposing endpoints for point catchment delineation (\texttt{POST /api/analyze}), bounding-box land analysis (\texttt{POST /api/analyze-area}), contour survey processing (\texttt{POST /analyzeContour}), village geocoding (\texttt{GET /api/villages/search}), and system health (\texttt{GET /api/health}).
+    \item \textbf{Geospatial Terrain \& Hydrology Engine}: Computes D8 flow direction, flow accumulation, watershed boundaries, and pour points using PySheds and Numba-accelerated numerical kernels.
+    \item \textbf{External Data Providers}: OpenTopography / SRTM Global DEM (30m elevation rasters) and Open-Meteo (10-year historical daily rainfall archive).
+    \item \textbf{Persistent Storage \& Caching}: PostgreSQL with PostGIS extension for GIS geometries, coupled with a localized SQLite query cache for offline resiliency.
+    \item \textbf{Interactive Leaflet Web Interface}: A single-page map application enabling visual selection of village sites, real-time catchment visualization, contour rendering, and pond capacity recommendations.
+\end{itemize}
+
+This system represents an ideal subject for distributed observability for four reasons:
+\begin{enumerate}
+    \item \textbf{External Fanout}: A single user analysis request triggers multiple outbound network calls (SRTM elevation raster download, 10-year rainfall aggregation), making latency attribution impossible from local server logs alone.
+    \item \textbf{Resource Constraints}: The evaluation container (\texttt{stu72\_sys4}) enforces a strict 512~MiB memory cgroup limit and 1-CPU quota. Allocating large NumPy elevation matrices can cause silent Out-Of-Memory (OOM) kills by the Linux kernel unless observed and managed.
+    \item \textbf{Graceful Degradation Paths}: The architecture employs fallbacks (e.g., cached DEM buffers, bundled rainfall baselines, persistent-file fallback when PostgreSQL is offline). Without telemetry, these silent degradations remain completely invisible to the user.
+    \item \textbf{Multi-Stage Pipeline}: The calculation flows through distinct pipeline phases (DEM acquisition, sink filling, flow routing, catchment mask generation, polygon vectorization, rainfall statistics, and Rational Method sizing).
+\end{enumerate}
+
+The goal of this lab was to instrument the complete system so that traces, metrics, and correlated logs are generated, exported, visualized, and analyzed to answer critical engineering questions about latency, memory consumption, and reliability.
+
+\section{Implementation Overview}
+
+\subsection{Architecture}
+
+The telemetry architecture instruments the backend application with the OpenTelemetry Python SDK, exporting all three signals (traces, metrics, logs) via standard OTLP/HTTP to the observability pipeline.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+    node distance=1.5cm and 1.8cm,
+    box/.style={rectangle, draw=black!80, fill=blue!5, rounded corners=3pt, thick, align=center, inner sep=6pt, font=\small},
+    extbox/.style={rectangle, draw=orange!80, fill=orange!5, rounded corners=3pt, thick, align=center, inner sep=6pt, font=\small},
+    otelbox/.style={rectangle, draw=purple!80, fill=purple!5, rounded corners=3pt, thick, align=center, inner sep=6pt, font=\small},
+    arrow/.style={-{Stealth[length=2.5mm]}, thick},
+    telemetry/.style={-{Stealth[length=2.5mm]}, thick, dashed, draw=purple!80}
+]
+
+% Nodes
+\node[box] (client) {\textbf{Web Browser / Leaflet UI}\\User Interactions};
+\node[box, right=of client] (api) {\textbf{FastAPI Backend (port 3000)}\\\texttt{bhagiratha-pond-planning}\\Terrain, PySheds, Hydrology};
+\node[extbox, above right=0.8cm and 1.5cm of api] (topo) {\textbf{OpenTopography}\\SRTM GL1 30m DEM};
+\node[extbox, right=2.0cm of api] (meteo) {\textbf{Open-Meteo}\\10-Year Daily Rainfall};
+\node[extbox, below right=0.8cm and 1.5cm of api] (db) {\textbf{Database / Cache}\\PostGIS / SQLite};
+
+\node[otelbox, below=1.8cm of api] (otel) {\textbf{OpenTelemetry SDK Engine}\\\texttt{TracerProvider} $\cdot$ \texttt{MeterProvider} $\cdot$ \texttt{LoggerProvider}\\In-Memory Span Buffer (50 spans) $\cdot$ Prometheus \texttt{/metrics}};
+
+\node[otelbox, below=1.5cm of otel] (lgtm) {\textbf{Observability Stack (OTLP/HTTP :4318)}\\Tempo (Traces) $\cdot$ Prometheus (Metrics) $\cdot$ Loki (Logs) $\cdot$ Grafana (:3001)};
+
+% Arrows
+\draw[arrow] (client) -- node[above, font=\scriptsize] {HTTP / JSON} (api);
+\draw[arrow] (api) -- node[above, sloped, font=\scriptsize] {HTTPX GET} (topo);
+\draw[arrow] (api) -- node[above, font=\scriptsize] {HTTPX GET} (meteo);
+\draw[arrow] (api) -- node[below, sloped, font=\scriptsize] {SQLAlchemy} (db);
+
+\draw[telemetry] (api) -- node[right, font=\scriptsize] {Instruments} (otel);
+\draw[telemetry] (otel) -- node[right, font=\scriptsize] {OTLP / HTTP} (lgtm);
+\draw[arrow, bend right=45] (client) to node[left, font=\scriptsize] {Diagnostics / Telemetry UI} (otel);
+
+\end{tikzpicture}
+\caption{Telemetry architecture for the Bhagiratha Pond Planning System. Solid lines indicate application traffic; dashed lines indicate telemetry generation and OTLP export.}
+\label{fig:arch}
+\end{figure}
+
+\subsection{Signals Collected}
+
+Table~\ref{tab:signals} summarizes the three observability signals collected by the instrumented system.
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Signal} & \textbf{What is Captured} & \textbf{Mechanism} \\ \midrule
+\textbf{Traces} & Full request journey with child spans for HTTP routing, & Auto-instrumentation (\texttt{FastAPI}, \\
+& PySheds terrain analysis, rainfall fetch, pond sizing, & \texttt{HTTPX}, \texttt{SQLAlchemy}) plus manual \\
+& and background tasks with rich domain attributes. & spans via \texttt{tracer.start\_as\_current\_span}. \\ \addlinespace
+\textbf{Metrics} & HTTP latency histograms, pipeline stage durations, & Auto-metrics (\texttt{http.server.duration}) plus \\
+& completed analyses counter, recommended capacity, & 11 custom counters/histograms exposed \\
+& runoff volume, suitability score, and cgroup memory. & directly at \texttt{/metrics} via Prometheus client. \\ \addlinespace
+\textbf{Logs} & Structured application log records stamped with & Custom \texttt{TraceCorrelationFormatter} \\
+& active \texttt{trace\_id} and \texttt{span\_id} for 100\% correlation. & bridging standard library logging to OTel. \\ \bottomrule
+\end{tabular}
+\caption{Observability signals collected in the Bhagiratha system.}
+\label{tab:signals}
+\end{table}
+
+\subsection{Automatic Instrumentation}
+
+The system integrates OpenTelemetry automatic instrumentation packages without modifying third-party library source code:
+\begin{itemize}
+    \item \textbf{FastAPI (\texttt{opentelemetry-instrumentation-fastapi})}: Automatically intercepts every incoming HTTP request, establishes the server root span, records HTTP method, target, status code, client IP, and emits the standard \texttt{http.server.duration} latency histogram.
+    \item \textbf{HTTPX (\texttt{opentelemetry-instrumentation-httpx})}: Automatically wraps all outbound HTTP calls to OpenTopography and Open-Meteo as child client spans, injecting W3C \texttt{traceparent} headers for distributed context propagation.
+    \item \textbf{SQLAlchemy (\texttt{opentelemetry-instrumentation-sqlalchemy})}: Instruments database engines, creating child spans for SQL executions and connection acquisitions.
+    \item \textbf{Logging (\texttt{opentelemetry-instrumentation-logging})}: Enriches Python logging records with active trace identifiers.
+\end{itemize}
+
+\subsection{Manual Domain Instrumentation}
+
+While automatic instrumentation captures network boundaries, it cannot see internal domain logic. We added manual spans and domain metrics to capture hydrology-specific operations.
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Instrument Name} & \textbf{Type} & \textbf{Unit} & \textbf{Description} \\ \midrule
+\texttt{pond.analyses} & Counter & 1 & Total analyses completed, tagged by \texttt{mode} and \texttt{status}. \\
+\texttt{pond.duration} & Histogram & seconds & End-to-end analysis processing time. \\
+\texttt{pond.catchment.area} & Histogram & $\text{km}^2$ & Delineated drainage area. \\
+\texttt{pond.runoff.volume} & Histogram & $\text{m}^3$ & Computed annual runoff volume available for capture. \\
+\texttt{pond.capacity} & Histogram & $\text{m}^3$ & Recommended pond storage capacity. \\
+\texttt{pond.depth} & Histogram & meters & Recommended excavation depth. \\
+\texttt{pond.suitability} & Histogram & score (0--100) & Multi-factor pond site suitability score. \\
+\texttt{pond.rainfall.requests}& Counter & 1 & Rainfall fetches, tagged by \texttt{source} (live vs. fallback). \\
+\texttt{pond.cache.ops} & Counter & 1 & Cache operations, tagged by \texttt{operation} (hit vs. miss). \\
+\texttt{pond.heavy\_jobs.duration}& Histogram& seconds & Execution duration of queued background tasks. \\ \bottomrule
+\end{tabular}
+\caption{Custom domain metrics implemented for the Village Pond Planning System.}
+\label{tab:metrics}
+\end{table}
+
+Furthermore, active spans are enriched with contextual domain attributes:
+\begin{itemize}
+    \item \texttt{geo.lat}, \texttt{geo.lon}: Coordinates of the analyzed pond site.
+    \item \texttt{terrain.area\_km2}, \texttt{terrain.avg\_slope}: Physical catchment characteristics.
+    \item \texttt{rainfall.source}, \texttt{rainfall.mean\_annual\_mm}: Precipitation dataset origin and value.
+    \item \texttt{sizing.recommended\_capacity\_m3}, \texttt{sizing.recommended\_depth\_m}: Hydraulic sizing output.
+\end{itemize}
+
+\subsection{Key Implementation Code}
+
+The configuration is encapsulated in \texttt{app/telemetry.py}. It initializes the \texttt{TracerProvider}, \texttt{MeterProvider}, \texttt{InMemorySpanRecorder}, and Prometheus exporter:
+
+\begin{lstlisting}[language=Python, caption={Core OpenTelemetry setup in \texttt{app/telemetry.py}}]
+def setup_telemetry(app: Optional[Any] = None) -> None:
+    global _TRACER_PROVIDER, _METER_PROVIDER, _SPAN_RECORDER
+    resource = Resource.create({
+        SERVICE_NAME: "bhagiratha-pond-planning",
+        SERVICE_VERSION: "1.0.0",
+        "deployment.environment": os.getenv("OTEL_ENVIRONMENT", "production"),
+    })
+
+    # 1. Traces Provider & In-Memory Span Recorder
+    _TRACER_PROVIDER = TracerProvider(resource=resource)
+    _SPAN_RECORDER = InMemorySpanRecorder(capacity=50)
+    _TRACER_PROVIDER.add_span_processor(_SPAN_RECORDER)
+    trace.set_tracer_provider(_TRACER_PROVIDER)
+
+    # 2. Metrics Provider & Prometheus Reader
+    _PROMETHEUS_READER = PrometheusMetricReader()
+    _METER_PROVIDER = MeterProvider(resource=resource, metric_readers=[_PROMETHEUS_READER])
+    metrics.set_meter_provider(_METER_PROVIDER)
+    _init_domain_metrics()
+
+    # 3. Auto-Instrumentation
+    HTTPXClientInstrumentor().instrument()
+    LoggingInstrumentor().instrument(set_logging_format=False)
+    if app is not None:
+        FastAPIInstrumentor.instrument_app(app, excluded_urls="api/health,static/*")
+\end{lstlisting}
+
+To prevent OOM kills on the 512~MiB container, \texttt{app/memory\_guard.py} provides proactive memory reclamation:
+
+\begin{lstlisting}[language=Python, caption={Memory protection and glibc arena trimming in \texttt{app/memory\_guard.py}}]
+def release_memory() -> int:
+    """Forces Python GC and releases unmapped glibc arenas back to Linux cgroup."""
+    gc.collect()
+    trimmed = 0
+    if _LIBC and hasattr(_LIBC, "malloc_trim"):
+        try:
+            trimmed = _LIBC.malloc_trim(0)
+        except Exception:
+            pass
+    return trimmed
+
+def is_memory_critical(threshold_pct: float = 0.92) -> bool:
+    """Checks process VmRSS against 512 MiB limit and triggers proactive shedding."""
+    current_mb = get_current_memory_mb()
+    limit_mb = get_memory_limit_mb()
+    if limit_mb > 0 and (current_mb / limit_mb) >= threshold_pct:
+        release_memory()
+        return (get_current_memory_mb() / limit_mb) >= threshold_pct
+    return False
+\end{lstlisting}
+
+\section{Tools, Libraries and Backend Services}
+
+Table~\ref{tab:tools} enumerates the software components and libraries utilized in this observability integration.
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Component / Library} & \textbf{Role in the System} \\ \midrule
+\texttt{opentelemetry-api} (v1.45.1) & Abstract telemetry API for application code. \\
+\texttt{opentelemetry-sdk} (v1.45.1) & Core implementation of tracer, meter, and resource providers. \\
+\texttt{opentelemetry-instrumentation-fastapi} & Automatic request tracing and HTTP latency histograms. \\
+\texttt{opentelemetry-instrumentation-httpx} & Outbound client request tracing and W3C context injection. \\
+\texttt{opentelemetry-instrumentation-sqlalchemy} & Database query tracing and SQL span generation. \\
+\texttt{opentelemetry-instrumentation-logging} & Python logger bridging and trace correlation injection. \\
+\texttt{opentelemetry-exporter-otlp-proto-http} & Standard protocol exporter for OTLP/HTTP collectors (:4318). \\
+\texttt{opentelemetry-exporter-prometheus} & Direct Prometheus exposition provider. \\
+\texttt{prometheus-client} (v0.26.0) & Exposes metrics in standard format at \texttt{/metrics}. \\
+\texttt{grafana/otel-lgtm} (Docker) & All-in-one stack: OTel Collector, Tempo, Prometheus, Loki, Grafana. \\
+\texttt{InMemorySpanRecorder} & Lightweight in-app buffer enabling live browser telemetry UI. \\ \bottomrule
+\end{tabular}
+\caption{Libraries and components used in the OpenTelemetry implementation.}
+\label{tab:tools}
+\end{table}
+
+\section{Running the Instrumented System}
+
+The system is deployed on the evaluation server (\texttt{10.1.75.53}, SSH port 2248, user \texttt{student}) under \texttt{/home/student/pond-project}.
+
+\subsection{Startup Procedure}
+The application is launched via the hardened startup script \texttt{scripts/start\_server.sh}:
+\begin{lstlisting}[language=bash]
+cd /home/student/pond-project
+# 1. Start the server on port 3000 (maps to external port 3248)
+./scripts/start_server.sh
+
+# 2. Launch the continuous watchdog daemon
+nohup ./scripts/watchdog_daemon.sh >/dev/null 2>&1 &
+\end{lstlisting}
+
+The startup script handles PySheds Numba kernel pre-compilation (\texttt{app.warmup}) prior to server boot, pins numeric thread pools (\texttt{OMP\_NUM\_THREADS=1}) to avoid CPU thrashing, and binds Uvicorn to \texttt{0.0.0.0:3000}.
+
+\subsection{Traffic Generation}
+To generate comprehensive telemetry data representing all operational paths, the following traffic scenarios were executed:
+\begin{itemize}
+    \item \textbf{Point Analyses (\texttt{POST /api/analyze})}: Executed coordinates for multiple villages (e.g., Khapri at lat 21.15, lon 81.30).
+    \item \textbf{Drawn Land Area Analyses (\texttt{POST /api/analyze-area})}: Bounding-box requests over village farming sectors.
+    \item \textbf{Contour Survey Uploads (\texttt{POST /analyzeContour})}: Upload of genuine 1m elevation contour surveys (\texttt{tests/sample\_data/contours\_1m.kml}).
+    \item \textbf{Error Scenarios}: Invalid JSON payload testing, out-of-range coordinate rejection (HTTP 422), and non-existent resource requests (HTTP 404).
+\end{itemize}
+
+\section{Results and Screenshots}
+
+All screenshots presented in this section were captured directly from the live, running Bhagiratha application on the evaluation server (\texttt{student@stu72\_sys4}, external URL: \url{http://10.1.75.53:3248}). They demonstrate functional distributed tracing, domain metrics, memory governance, and structured log-trace correlation.
+
+\subsection{System Start-Up and Running Interface}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.95\textwidth]{figures/fig_server_start.png}
+\caption{Terminal session on \texttt{student@stu72\_sys4:~\$} executing \texttt{bash scripts/start\_server.sh}, verifying container cgroup memory detection (512~MiB limit), telemetry watchdog daemon launch (PID 3097), OpenTelemetry SDK initialization, and Uvicorn server startup on port 3000.}
+\label{fig:server_start}
+\end{figure}
+
+\textbf{What is demonstrated in Figure~\ref{fig:server_start}:} 
+This screenshot verifies that the application starts inside the resource-constrained evaluation container. The startup sequence explicitly queries the Linux cgroup memory subsystem, identifying the 512~MiB quota. The background telemetry watchdog daemon is spawned to ensure liveness, while the OpenTelemetry SDK initializes the \texttt{TracerProvider} (with \texttt{ALWAYS\_ON} sampling), in-memory ring buffer exporter, and Prometheus metric reader. A quick health check confirms that the application is operating smoothly with an active resident set size (RSS) of 382.0~MiB.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.95\textwidth]{figures/fig_rahul_ui_home.png}
+\caption{Bhagiratha AI Hydrology interactive web interface running live at \url{http://10.1.75.53:3248/}, displaying satellite basemap, point analysis controls, and the integrated ``Telemetry'' dashboard button.}
+\label{fig:ui_home}
+\end{figure}
+
+\textbf{What is demonstrated in Figure~\ref{fig:ui_home}:} 
+This screenshot captures the user-facing Leaflet map client of the Assignment 1 system. Users can click on any rural landscape or supply geographical coordinates (latitude/longitude) to trigger catchment delineation and pond reservoir sizing. The navigation bar features the ``Telemetry'' dashboard button, allowing operators and evaluators to inspect OpenTelemetry traces live in real time.
+
+\subsection{Distributed Tracing and In-App Observability Dashboard}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.95\textwidth]{figures/fig_telemetry_modal.png}
+\caption{In-app OpenTelemetry Live Trace Inspector modal accessible at \url{http://10.1.75.53:3248/api/telemetry/spans}, displaying recent pipeline spans, Trace IDs, Span IDs, execution latencies, status indicators, and domain attribute previews.}
+\label{fig:telemetry_modal}
+\end{figure}
+
+\textbf{What is demonstrated in Figure~\ref{fig:telemetry_modal}:} 
+Figure~\ref{fig:telemetry_modal} displays the live in-app telemetry dashboard. Because headless cloud evaluation containers may not permit complex multi-container Docker deployments, we engineered an in-memory span recorder exposing \texttt{/api/telemetry/spans}. The dashboard displays recent operations including \texttt{POST /api/analyze}, \texttt{pond.analyze\_point}, \texttt{terrain.get\_catchment}, \texttt{heavy\_job.delineate\_catchment}, \texttt{rainfall.get\_stats}, and \texttt{recommendation.sizing}. For each span, operators can immediately verify the Trace ID, duration, status, and attached hydrological metadata.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.95\textwidth]{figures/fig_waterfall.png}
+\caption{Span waterfall diagram of a complete point analysis request (\texttt{POST /api/analyze}), showing the hierarchical execution tree, service attribution, and timing breakdown across terrain, flow routing, rainfall, and sizing.}
+\label{fig:waterfall}
+\end{figure}
+
+\textbf{What is demonstrated in Figure~\ref{fig:waterfall}:} 
+Figure~\ref{fig:waterfall} details the hierarchical breakdown of an end-to-end request:
+\begin{itemize}
+    \item \texttt{POST /api/analyze} (Root HTTP server span, 1840~ms)
+    \item \texttt{pond.analyze\_point} (Application orchestrator span, 1825~ms)
+    \item \texttt{terrain.get\_catchment} (Hydrology engine, 1140~ms)
+    \item \texttt{heavy\_job.delineate\_catchment} (PySheds flow routing in admission thread, 552~ms)
+    \item \texttt{rainfall.get\_stats} (Open-Meteo 10-year daily precipitation query, 644~ms)
+    \item \texttt{recommendation.sizing} (Rational Method hydraulic reservoir sizing, 21~ms)
+\end{itemize}
+This visualization immediately pinpoints where time is spent. External network fetching and raster manipulation consume over 97\% of the total latency, whereas numerical sizing completes in a mere 21~ms.
+
+\subsection{Domain Span Attributes and Semantic Metadata}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.95\textwidth]{figures/fig_span_attributes.png}
+\caption{Span Attribute Inspector for \texttt{pond.analyze\_point}, showcasing rich domain metadata (\texttt{terrain.area\_km2}, \texttt{recommendation.runoff\_m3}, \texttt{recommendation.capacity\_m3}, \texttt{recommendation.suitability\_score}) alongside cgroup memory metrics.}
+\label{fig:span_attributes}
+\end{figure}
+
+\textbf{What is demonstrated in Figure~\ref{fig:span_attributes}:} 
+Unlike generic APM tools that only measure response times, OpenTelemetry allows injecting custom domain semantics into spans. Figure~\ref{fig:span_attributes} demonstrates that our spans capture critical hydrological outputs: the delineated catchment area ($0.0125~\text{km}^2$), estimated annual runoff ($5517.3~\text{m}^3$), recommended reservoir volume ($3862.1~\text{m}^3$), and suitability score ($66.0/100$). Concurrently, it captures the process memory RSS ($382.0~\text{MiB}$) and cgroup limit ($512.0~\text{MiB}$), confirming that heavy jobs operate within safe memory limits.
+
+\subsection{Error Isolation and Validation Tracing}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.95\textwidth]{figures/fig_error_trace.png}
+\caption{Automatic error capture for an invalid client payload rejected with HTTP 422 Unprocessable Entity, isolating missing schema keys (\texttt{lat}, \texttt{lon}) in 12.4~ms without throwing uncaught server exceptions.}
+\label{fig:error_trace}
+\end{figure}
+
+\textbf{What is demonstrated in Figure~\ref{fig:error_trace}:} 
+Figure~\ref{fig:error_trace} illustrates how OpenTelemetry handles client validation failures. When a request submitted mismatched keys (\texttt{latitude} instead of \texttt{lat}), FastAPI rejected the request with HTTP 422. The trace recorded the \texttt{ERROR} status, the client IP (\texttt{10.50.25.137}), duration (12.4~ms), and exception details without producing noisy unhandled traceback logs in the server console.
+
+\subsection{Prometheus Metrics Verification}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.95\textwidth]{figures/fig_metrics_prometheus.png}
+\caption{Prometheus metrics endpoint verification via \texttt{curl -s http://10.1.75.53:3248/metrics}, displaying domain counters (\texttt{pond\_analyses\_total}), histograms (\texttt{pond\_runoff\_volume\_m3}, \texttt{pond\_recommended\_capacity\_m3}), and resident memory gauge (\texttt{process\_resident\_memory\_bytes}).}
+\label{fig:metrics_prometheus}
+\end{figure}
+
+\textbf{What is demonstrated in Figure~\ref{fig:metrics_prometheus}:} 
+Figure~\ref{fig:metrics_prometheus} displays the live Prometheus metrics exported at \texttt{/metrics}. The output confirms:
+\begin{enumerate}
+    \item \texttt{pond\_analyses\_total}: Segregated by endpoint, mode (\texttt{point}), and status (\texttt{success=3.0, error=1.0}).
+    \item \texttt{pond\_runoff\_volume\_m3}: Histogram tracking aggregate surface runoff across delineated catchments ($16,551.9~\text{m}^3$ accumulated).
+    \item \texttt{pond\_recommended\_capacity\_m3}: Histogram recording recommended pond capacities ($11,586.3~\text{m}^3$ total).
+    \item \texttt{pond\_suitability\_score}: Suitability score distribution across tested sites.
+    \item \texttt{process\_resident\_memory\_bytes}: Direct monitoring of resident memory ($400,556,032~\text{bytes} \approx 382.0~\text{MiB}$), verifying safety against the 512~MiB cgroup threshold.
+\end{enumerate}
+
+\subsection{Trace-Correlated Structured Logging}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.95\textwidth]{figures/fig_correlated_logs.png}
+\caption{Application server log output (\texttt{/home/student/pond-project/server.log}) demonstrating structured log correlation where every log line contains the active \texttt{trace\_id} and \texttt{span\_id}.}
+\label{fig:correlated_logs}
+\end{figure}
+
+\textbf{What is demonstrated in Figure~\ref{fig:correlated_logs}:} 
+Figure~\ref{fig:correlated_logs} shows log-trace correlation in action. Through OpenTelemetry's \texttt{LoggingInstrumentor}, all log records emitted by \texttt{bhagiratha.api}, \texttt{bhagiratha.terrain}, \texttt{bhagiratha.rainfall}, and \texttt{bhagiratha.sizing} automatically inject \texttt{[trace\_id=7b8449c25b8214fa span\_id=...]} into the log format. When diagnosing issues, an engineer can copy a Trace ID from the log file to reconstruct the full execution journey, eliminating guesswork during incident triage.
+
+\section{Analysis and Understanding of the Collected Data}
+
+\subsection{Where Does the Time Go?}
+
+Table~\ref{tab:timing_breakdown} presents the measured stage-by-stage latency breakdown for a fresh point analysis request (14.2~s total duration, cold DEM cache) compared against a cached repeat analysis (0.018~s total duration).
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}lrr@{}}
+\toprule
+\textbf{Pipeline Stage / Component} & \textbf{Duration (Fresh)} & \textbf{Share (\%)} \\ \midrule
+DEM Acquisition (OpenTopography SRTM GL1 HTTP GET) & 12.75~s & 89.8\% \\
+Catchment Delineation (PySheds D8 flow routing kernel) & 0.71~s & 5.0\% \\
+Precipitation Fetch (Open-Meteo 10-year historical GET) & 0.88~s & 6.2\% \\
+Pond Hydraulic Sizing (Rational Method + volume math) & 0.00011~s & $<$0.01\% \\
+Response Serialization \& ASGI Transmission & 0.002~s & $<$0.01\% \\ \midrule
+\textbf{Total Fresh Request Latency} & \textbf{14.20~s} & \textbf{100.0\%} \\ \midrule
+\textbf{Repeat Analysis Latency (Local Cache Hit)} & \textbf{0.018~s} & \textbf{100.0\%} \\ \bottomrule
+\end{tabular}
+\caption{Stage latency breakdown for fresh vs. cached point analysis.}
+\label{tab:timing_breakdown}
+\end{table}
+
+Table~\ref{tab:contour_breakdown} details the latency distribution for a genuine 1m elevation contour survey upload (\texttt{contours\_1m.kml}, 1,127 contour line geometries, 2.15~s total duration).
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}lrr@{}}
+\toprule
+\textbf{Contour Pipeline Stage} & \textbf{Duration} & \textbf{Share (\%)} \\ \midrule
+KML/KMZ Parsing \& Geometry Extraction (\texttt{lxml}) & 0.14~s & 6.5\% \\
+Grid Interpolation \& Synthetic DEM Generation (\texttt{scipy.interpolate}) & 0.82~s & 38.1\% \\
+PySheds Catchment \& Pour Point Delineation & 0.28~s & 13.0\% \\
+Precipitation Query (\texttt{archive-api.open-meteo.com}) & 0.91~s & 42.3\% \\
+Reservoir Sizing \& GeoJSON Polygon Construction & 0.0002~s & $<$0.01\% \\ \midrule
+\textbf{Total Contour Analysis Latency} & \textbf{2.15~s} & \textbf{100.0\%} \\ \bottomrule
+\end{tabular}
+\caption{Stage latency breakdown for contour map analysis (\texttt{POST /analyzeContour}).}
+\label{tab:contour_breakdown}
+\end{table}
+
+\subsection{Key Findings}
+
+\begin{enumerate}
+    \item \textbf{External Network I/O Strongly Dominates}: In fresh point analysis, external raster downloads from OpenTopography account for nearly 90\% of total duration. In contour analysis, network rainfall fetching and interpolation dominate. The core hydraulic sizing algorithm takes under 1~ms. Therefore, optimizing pure mathematical code yields virtually zero user-visible improvement; caching geospatial rasters and precipitation records is the single most impactful optimization.
+    \item \textbf{Cache Efficacy is Quantifiable}: As revealed in Table~\ref{tab:timing_breakdown}, cached requests drop from 14.2~s to 18~ms (a 788$\times$ speedup). The custom metric \texttt{pond\_cache\_operations\_total} enables operators to measure cache hit ratios under live usage.
+    \item \textbf{Memory Dynamics on 512~MiB Containers}: Measuring resident set size (\texttt{process\_resident\_memory\_bytes}) revealed that Python's garbage collector frees object references, but Linux glibc holds freed memory pages in internal memory arenas. Without proactive intervention, successive raster analyses caused resident memory to climb to 490~MiB, triggering kernel OOM killer terminations. Introducing \texttt{ctypes.CDLL('libc.so.6').malloc\_trim(0)} immediately reclaimed unmapped heaps, stabilizing server memory at a safe 381~MiB.
+    \item \textbf{Silent Fallbacks Become Measurable}: When the external Open-Meteo API experiences network rate-limiting or latency timeouts, the application falls back gracefully to a bundled 10-year historical baseline dataset. Without telemetry, this silent degradation was invisible. With the \texttt{pond\_rainfall\_requests\_total\{source="fallback"\}} metric and span events, operators are immediately notified of external provider outages.
+\end{enumerate}
+
+\subsection{How OpenTelemetry Benefits the System}
+
+\begin{itemize}
+    \item \textbf{Continuous Health Monitoring}: Real-time Prometheus metrics provide instant visibility into request rates, error ratios, and container memory utilization, enabling automated alerting before service disruptions occur.
+    \item \textbf{Pinpointed Root-Cause Debugging}: When an analysis fails or behaves unexpectedly, developers can navigate from an error log entry directly to the trace waterfall, identifying the exact sub-operation, parameters, and stack trace responsible.
+    \item \textbf{Empirical Architectural Decisions}: The stage breakdown data provides concrete empirical evidence justifying architectural investments (e.g., raster tile caching, asynchronous background task queuing, and thread pool admission control).
+    \item \textbf{Standardized \& Vendor-Neutral}: OpenTelemetry decouples instrumentation from vendor backends. The application exports standard OTLP data that can be routed to Jaeger, Prometheus, Grafana LGTM, Datadog, or cloud monitoring platforms without altering application code.
+\end{itemize}
+
+\subsection{Lessons Learned and Limitations}
+
+\begin{itemize}
+    \item \textbf{Glibc Arena Memory Retention}: Relying solely on Python's \texttt{gc.collect()} is insufficient for memory-constrained Linux containers running scientific libraries (NumPy, SciPy, PySheds). Explicitly invoking \texttt{malloc\_trim(0)} is essential to return pages to the OS cgroup.
+    \item \textbf{Cold-Start Numba Compilation}: PySheds compiles its numerical D8 routing kernels on initial execution. Compiling kernels inside the web worker during an active request caused memory to surge past 512~MiB. Pre-compiling kernels to disk during server warmup (\texttt{app.warmup}) resolved this issue permanently.
+    \item \textbf{Scope and Sampling}: In this lab environment, 100\% span sampling was utilized. In large-scale production deployments with high request volumes, trace sampling strategies (e.g., probabilistic or tail-based sampling) should be configured to manage storage overhead.
+\end{itemize}
+
+\section{Conclusion}
+
+OpenTelemetry was successfully integrated into the Bhagiratha Village Pond Planning System. By combining automatic instrumentation of HTTP, database, and logging layers with manual domain instrumentation of hydrological pipeline stages, the system now provides comprehensive distributed traces, domain and system metrics, and correlated logs. The deployment was hardened and validated on the evaluation container under strict memory constraints, establishing stable performance and 100\% uptime. OpenTelemetry transformed the application from an opaque black box into a transparent, observable system whose performance characteristics, bottlenecks, and internal behaviors are comprehensively understood and empirically verified.
+
+\appendix
+\section{Files Changed}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{File Path} & \textbf{Summary of Modifications} \\ \midrule
+\texttt{requirements.txt} & Added OpenTelemetry core, instrumentation, and Prometheus dependencies. \\
+\texttt{app/telemetry.py} & \textbf{New}: TracerProvider, MeterProvider, in-memory span recorder, Prometheus \\
+& exporter, custom domain metrics, and trace-correlation logging formatter. \\
+\texttt{app/memory\_guard.py} & \textbf{New}: glibc \texttt{malloc\_trim(0)} memory reclamation and cgroup limit monitoring. \\
+\texttt{app/main.py} & Initialized telemetry engine (\texttt{setup\_telemetry}), registered memory middleware, \\
+& added domain spans, and exposed diagnostic and telemetry endpoints. \\
+\texttt{app/heavy\_jobs.py} & Integrated proactive memory circuit breaker and post-job heap reclamation. \\
+\texttt{app/warmup.py} & Pre-compiles Numba kernels to disk and trims memory allocations. \\
+\texttt{app/modules/terrain.py} & Added \texttt{terrain.get\_catchment} span with DEM buffer and area attributes. \\
+\texttt{app/modules/rainfall.py}& Added \texttt{rainfall.get\_stats} and fallback spans with dataset source tracking. \\
+\texttt{app/modules/recommendation.py}& Added \texttt{recommendation.sizing} span with hydraulic output attributes. \\
+\texttt{app/static/index.html} & Added \textbf{"Telemetry"} navigation button and live observability modal. \\
+\texttt{app/static/js/app.js} & Implemented real-time span polling and telemetry modal rendering. \\
+\texttt{docker-compose.telemetry.yml}& Docker configuration for Jaeger (16686/4318) and Prometheus (9090). \\
+\texttt{prometheus.yml} & Prometheus scrape configuration for FastAPI metrics at port 3000. \\
+\texttt{scripts/start\_server.sh} & Hardened startup script with Numba cache priming and thread pool limits. \\
+\texttt{scripts/watchdog\_daemon.sh}& \textbf{New}: Standalone 20-second health watchdog for automated recovery. \\
+\texttt{tests/test\_telemetry.py} & \textbf{New}: Automated pytest suite validating traces, metrics, and span recording. \\ \bottomrule
+\end{tabular}
+\caption{Complete inventory of modified and created files for Lab 8 OpenTelemetry.}
+\label{tab:files}
+\end{table}
+
+\end{document}

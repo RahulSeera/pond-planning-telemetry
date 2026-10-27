@@ -69,6 +69,9 @@
       <button class="btn btn-ghost" id="history-modal-btn" title="View past analyses">
         📜 History
       </button>
+      <button class="btn btn-ghost" id="telemetry-modal-btn" title="OpenTelemetry Traces, Metrics & Observability">
+        🔭 Telemetry
+      </button>
       <button class="btn btn-ghost" id="guide-modal-btn" title="System Architecture & Formula Guide">
         ℹ️ Info
       </button>
@@ -445,6 +448,73 @@
 
         <h4>3. System Specifications</h4>
         <p>Built as a high-performance modular monolith with FastAPI, Rasterio, PySheds, GeoAlchemy2, PostgreSQL/PostGIS, and Leaflet.js.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- OpenTelemetry Observability Modal -->
+  <div class="modal-overlay" id="telemetry-modal" style="display: none;">
+    <div class="modal-card glass-card large-modal">
+      <div class="modal-header">
+        <h3>🔭 OpenTelemetry Observability Dashboard</h3>
+        <button class="btn-close" id="close-telemetry-modal">✕</button>
+      </div>
+      <div class="modal-body telemetry-modal-body">
+        <!-- Status summary row -->
+        <div class="otel-cards-grid">
+          <div class="otel-card">
+            <span class="otel-card-title">Service</span>
+            <div class="otel-card-val" id="otel-val-service">bhagiratha-pond-planning</div>
+            <span class="otel-card-sub">Environment: production</span>
+          </div>
+          <div class="otel-card">
+            <span class="otel-card-title">Tracing & Metrics</span>
+            <div class="otel-card-val text-success">● Active</div>
+            <span class="otel-card-sub">OpenTelemetry SDK 1.45.1</span>
+          </div>
+          <div class="otel-card">
+            <span class="otel-card-title">Prometheus Metrics</span>
+            <div class="otel-card-val"><a href="/metrics" target="_blank" class="otel-link">/metrics ↗</a></div>
+            <span class="otel-card-sub">Standard exposition format</span>
+          </div>
+          <div class="otel-card">
+            <span class="otel-card-title">Observability Backends</span>
+            <div class="otel-ui-links">
+              <a href="http://localhost:16686" target="_blank" class="otel-link-pill">Jaeger UI ↗</a>
+              <a href="http://localhost:9090" target="_blank" class="otel-link-pill">Prometheus ↗</a>
+            </div>
+            <span class="otel-card-sub">Run: ./scripts/start_telemetry.sh</span>
+          </div>
+        </div>
+
+        <!-- Spans section header -->
+        <div class="otel-table-header">
+          <h4>Live Distributed Traces (Last 50 Spans)</h4>
+          <button class="btn btn-outline btn-sm" id="refresh-telemetry-btn">🔄 Refresh Traces</button>
+        </div>
+
+        <!-- Spans table -->
+        <div class="otel-table-wrap">
+          <table class="otel-table">
+            <thead>
+              <tr>
+                <th>Span Name</th>
+                <th>Trace ID</th>
+                <th>Span ID</th>
+                <th>Duration</th>
+                <th>Status</th>
+                <th>Key Attributes</th>
+              </tr>
+            </thead>
+            <tbody id="otel-spans-tbody">
+              <tr>
+                <td colspan="6" style="text-align: center; color: var(--text-muted); padding: 20px;">
+                  Click "Refresh Traces" or run an analysis to view live traces.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   </div>

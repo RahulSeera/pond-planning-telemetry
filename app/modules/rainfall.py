@@ -20,6 +20,7 @@ from datetime import date
 import httpx
 
 from app.schemas import RainfallResult
+from app.telemetry import get_tracer, METRICS
 
 OPEN_METEO_URL = "https://archive-api.open-meteo.com/v1/archive"
 
@@ -110,14 +111,27 @@ def bundled_rainfall(lat: float, lon: float):
 def fallback_rainfall(lat: float, lon: float) -> tuple[RainfallResult, str]:
     """What to use when the live query fails: bundled real archive data if a point
     is close enough, else the regional baseline — always with a user-facing note."""
-    hit = bundled_rainfall(lat, lon)
-    if hit is not None:
-        result, dist_km, period = hit
-        return result, (
-            f"{BUNDLED_RAINFALL_NOTE_PREFIX} — using bundled Open-Meteo "
-            f"archive data ({period}, {result.data_years} years) for a point {dist_km:.1f} km away."
-        )
-    return baseline_rainfall(), BASELINE_WARNING
+    tracer = get_tracer("bhagiratha.rainfall")
+    with tracer.start_as_current_span("rainfall.fallback") as span:
+        span.set_attribute("geo.lat", lat)
+        span.set_attribute("geo.lon", lon)
+        hit = bundled_rainfall(lat, lon)
+        if hit is not None:
+            result, dist_km, period = hit
+            span.set_attribute("rainfall.source", "bundled")
+            span.set_attribute("rainfall.distance_km", round(dist_km, 2))
+            span.set_attribute("rainfall.annual_avg_mm", result.annual_avg_mm)
+            if METRICS and METRICS.rainfall_requests_total:
+                METRICS.rainfall_requests_total.add(1, {"source": "bundled", "status": "fallback"})
+            return result, (
+                f"{BUNDLED_RAINFALL_NOTE_PREFIX} — using bundled Open-Meteo "
+                f"archive data ({period}, {result.data_years} years) for a point {dist_km:.1f} km away."
+            )
+        span.set_attribute("rainfall.source", "baseline")
+        span.set_attribute("rainfall.annual_avg_mm", CLIMATE_BASELINE["annual_avg_mm"])
+        if METRICS and METRICS.rainfall_requests_total:
+            METRICS.rainfall_requests_total.add(1, {"source": "baseline", "status": "fallback"})
+        return baseline_rainfall(), BASELINE_WARNING
 
 
 class RainfallDataError(Exception):
@@ -177,19 +191,37 @@ async def get_rainfall_stats(lat: float, lon: float) -> RainfallResult:
             because it failed within the last FAILURE_COOLDOWN_S seconds.
     """
     global _last_failure_at
-    if _last_failure_at is not None and time.monotonic() - _last_failure_at < FAILURE_COOLDOWN_S:
-        raise RainfallDataError("Skipped live query: Open-Meteo failed recently (circuit breaker open).")
-    try:
-        raw = await asyncio.wait_for(fetch_historical_rainfall(lat, lon), timeout=QUERY_DEADLINE_S)
-        result = aggregate_rainfall(raw)
-    except asyncio.TimeoutError:
-        _last_failure_at = time.monotonic()
-        raise RainfallDataError(f"Rainfall query exceeded {QUERY_DEADLINE_S:.0f} s.")
-    except RainfallDataError:
-        _last_failure_at = time.monotonic()
-        raise
-    _last_failure_at = None
-    return result
+    tracer = get_tracer("bhagiratha.rainfall")
+    with tracer.start_as_current_span("rainfall.get_stats") as span:
+        span.set_attribute("geo.lat", lat)
+        span.set_attribute("geo.lon", lon)
+        if _last_failure_at is not None and time.monotonic() - _last_failure_at < FAILURE_COOLDOWN_S:
+            span.set_attribute("rainfall.circuit_breaker", "open")
+            if METRICS and METRICS.rainfall_requests_total:
+                METRICS.rainfall_requests_total.add(1, {"source": "live", "status": "circuit_breaker_open"})
+            raise RainfallDataError("Skipped live query: Open-Meteo failed recently (circuit breaker open).")
+        try:
+            raw = await asyncio.wait_for(fetch_historical_rainfall(lat, lon), timeout=QUERY_DEADLINE_S)
+            result = aggregate_rainfall(raw)
+            span.set_attribute("rainfall.source", "live")
+            span.set_attribute("rainfall.annual_avg_mm", result.annual_avg_mm)
+            span.set_attribute("rainfall.data_years", result.data_years)
+            if METRICS and METRICS.rainfall_requests_total:
+                METRICS.rainfall_requests_total.add(1, {"source": "live", "status": "success"})
+        except asyncio.TimeoutError:
+            _last_failure_at = time.monotonic()
+            span.set_attribute("rainfall.error", "timeout")
+            if METRICS and METRICS.rainfall_requests_total:
+                METRICS.rainfall_requests_total.add(1, {"source": "live", "status": "timeout"})
+            raise RainfallDataError(f"Rainfall query exceeded {QUERY_DEADLINE_S:.0f} s.")
+        except RainfallDataError as err:
+            _last_failure_at = time.monotonic()
+            span.set_attribute("rainfall.error", str(err))
+            if METRICS and METRICS.rainfall_requests_total:
+                METRICS.rainfall_requests_total.add(1, {"source": "live", "status": "error"})
+            raise
+        _last_failure_at = None
+        return result
 
 
 async def fetch_historical_rainfall(lat: float, lon: float) -> dict:

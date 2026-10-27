@@ -55,6 +55,10 @@ Thumbs.db
 # Local agent context & passwords
 CLAUDE.md
 
+# Friend reference report (do not commit)
+Final_Report_Lab_8.pdf
+Final_Report_Lab_8_Rahul_Seera.pdf
+
 # Server & watchdog logs
 *.log
 
@@ -66,5 +70,6 @@ CLAUDE.md
 *.blg
 *.fls
 *.fdb_latexmk
+*.toc
 
 
