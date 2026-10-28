@@ -293,41 +293,41 @@ To generate comprehensive telemetry data representing all operational paths, the
 
 \section{Results and Screenshots}
 
-All screenshots presented in this section were captured directly from the live, running Bhagiratha application on the evaluation server (\texttt{student@stu72\_sys4}, external URL: \url{http://10.1.75.53:3248}). They demonstrate functional distributed tracing, domain metrics, memory governance, and structured log-trace correlation.
+All screenshots presented in this section were captured directly by the author from the live, running Bhagiratha application and the evaluation container environment (\texttt{student@stu72\_sys4}, external URL: \url{http://10.1.75.53:3248}). They demonstrate functional distributed tracing, domain metrics, memory governance, and structured log correlation.
 
-\subsection{System Start-Up and Running Interface}
+\subsection{System Liveness and Running Interface}
 
 \begin{figure}[htbp]
 \centering
 \includegraphics[width=0.95\textwidth]{figures/fig_server_start.png}
-\caption{Terminal session on \texttt{student@stu72\_sys4:~\$} executing \texttt{bash scripts/start\_server.sh}, verifying container cgroup memory detection (512~MiB limit), telemetry watchdog daemon launch (PID 3097), OpenTelemetry SDK initialization, and Uvicorn server startup on port 3000.}
+\caption{Terminal session on \texttt{student@stu72\_sys4:~\$} verifying Uvicorn worker process (PID 3240) running on port 3000 and confirming the health check endpoint response (\texttt{status: healthy, memory\_mb: 383.4~MB}).}
 \label{fig:server_start}
 \end{figure}
 
 \textbf{What is demonstrated in Figure~\ref{fig:server_start}:} 
-This screenshot verifies that the application starts inside the resource-constrained evaluation container. The startup sequence explicitly queries the Linux cgroup memory subsystem, identifying the 512~MiB quota. The background telemetry watchdog daemon is spawned to ensure liveness, while the OpenTelemetry SDK initializes the \texttt{TracerProvider} (with \texttt{ALWAYS\_ON} sampling), in-memory ring buffer exporter, and Prometheus metric reader. A quick health check confirms that the application is operating smoothly with an active resident set size (RSS) of 382.0~MiB.
+This screenshot verifies that the application server is healthy and actively executing inside the container. Querying \texttt{GET /api/health} confirms that the service is running in resilient persistent-file standby mode, with an active memory consumption of 383.4~MiB (safely beneath the 512~MiB cgroup threshold). The \texttt{ps aux} output confirms that the Uvicorn master worker is bound to \texttt{0.0.0.0:3000}.
 
 \begin{figure}[htbp]
 \centering
 \includegraphics[width=0.95\textwidth]{figures/fig_rahul_ui_home.png}
-\caption{Bhagiratha AI Hydrology interactive web interface running live at \url{http://10.1.75.53:3248/}, displaying satellite basemap, point analysis controls, and the integrated ``Telemetry'' dashboard button.}
+\caption{Bhagiratha AI Hydrology web interface running live at \url{http://10.1.75.53:3248/}, displaying the satellite map, delineated catchment basin, recommended pond site ($21.27278^\circ\text{N}, 81.32306^\circ\text{E}$), planned capacity ($4,430,514~\text{m}^3$), suitability score ($89/100$), and the ``Telemetry'' navigation button.}
 \label{fig:ui_home}
 \end{figure}
 
 \textbf{What is demonstrated in Figure~\ref{fig:ui_home}:} 
-This screenshot captures the user-facing Leaflet map client of the Assignment 1 system. Users can click on any rural landscape or supply geographical coordinates (latitude/longitude) to trigger catchment delineation and pond reservoir sizing. The navigation bar features the ``Telemetry'' dashboard button, allowing operators and evaluators to inspect OpenTelemetry traces live in real time.
+Figure~\ref{fig:ui_home} shows the interactive map interface with a completed hydrological land area analysis. The system successfully executed D8 flow routing across the selected zone, delineated a $14.45~\text{km}^2$ catchment basin, identified the optimal runoff convergence pour point, and computed a reservoir capacity of $4,430,514~\text{m}^3$ with an overall suitability score of 89. The top navigation bar provides instant access to the integrated ``Telemetry'' dashboard.
 
 \subsection{Distributed Tracing and In-App Observability Dashboard}
 
 \begin{figure}[htbp]
 \centering
 \includegraphics[width=0.95\textwidth]{figures/fig_telemetry_modal.png}
-\caption{In-app OpenTelemetry Live Trace Inspector modal accessible at \url{http://10.1.75.53:3248/api/telemetry/spans}, displaying recent pipeline spans, Trace IDs, Span IDs, execution latencies, status indicators, and domain attribute previews.}
+\caption{In-app OpenTelemetry Observability Dashboard modal on \url{http://10.1.75.53:3248/}, showing active SDK status, exporter links, and live streaming spans with Trace IDs, Span IDs, execution latencies, and status badges.}
 \label{fig:telemetry_modal}
 \end{figure}
 
 \textbf{What is demonstrated in Figure~\ref{fig:telemetry_modal}:} 
-Figure~\ref{fig:telemetry_modal} displays the live in-app telemetry dashboard. Because headless cloud evaluation containers may not permit complex multi-container Docker deployments, we engineered an in-memory span recorder exposing \texttt{/api/telemetry/spans}. The dashboard displays recent operations including \texttt{POST /api/analyze}, \texttt{pond.analyze\_point}, \texttt{terrain.get\_catchment}, \texttt{heavy\_job.delineate\_catchment}, \texttt{rainfall.get\_stats}, and \texttt{recommendation.sizing}. For each span, operators can immediately verify the Trace ID, duration, status, and attached hydrological metadata.
+Figure~\ref{fig:telemetry_modal} displays the live in-app telemetry dashboard modal. The dashboard confirms that OpenTelemetry Python SDK (v1.45.1) is actively capturing spans and exporting metrics. The live span streaming table reports recent requests, including health probes and analysis dispatches, displaying unique Trace IDs, Span IDs, execution durations (e.g., 5.09~ms), and green \texttt{OK} status indicators.
 
 \begin{figure}[htbp]
 \centering
@@ -377,31 +377,30 @@ Figure~\ref{fig:error_trace} illustrates how OpenTelemetry handles client valida
 \begin{figure}[htbp]
 \centering
 \includegraphics[width=0.95\textwidth]{figures/fig_metrics_prometheus.png}
-\caption{Prometheus metrics endpoint verification via \texttt{curl -s http://10.1.75.53:3248/metrics}, displaying domain counters (\texttt{pond\_analyses\_total}), histograms (\texttt{pond\_runoff\_volume\_m3}, \texttt{pond\_recommended\_capacity\_m3}), and resident memory gauge (\texttt{process\_resident\_memory\_bytes}).}
+\caption{Prometheus metrics endpoint exposition at \url{http://10.1.75.53:3248/metrics}, displaying system gauges (\texttt{process\_resident\_memory\_bytes}), target metadata, and HTTP client latency histograms.}
 \label{fig:metrics_prometheus}
 \end{figure}
 
 \textbf{What is demonstrated in Figure~\ref{fig:metrics_prometheus}:} 
-Figure~\ref{fig:metrics_prometheus} displays the live Prometheus metrics exported at \texttt{/metrics}. The output confirms:
+Figure~\ref{fig:metrics_prometheus} displays the live Prometheus metrics exported at \texttt{/metrics} in standard text exposition format. The captured output demonstrates:
 \begin{enumerate}
-    \item \texttt{pond\_analyses\_total}: Segregated by endpoint, mode (\texttt{point}), and status (\texttt{success=3.0, error=1.0}).
-    \item \texttt{pond\_runoff\_volume\_m3}: Histogram tracking aggregate surface runoff across delineated catchments ($16,551.9~\text{m}^3$ accumulated).
-    \item \texttt{pond\_recommended\_capacity\_m3}: Histogram recording recommended pond capacities ($11,586.3~\text{m}^3$ total).
-    \item \texttt{pond\_suitability\_score}: Suitability score distribution across tested sites.
-    \item \texttt{process\_resident\_memory\_bytes}: Direct monitoring of resident memory ($400,556,032~\text{bytes} \approx 382.0~\text{MiB}$), verifying safety against the 512~MiB cgroup threshold.
+    \item \texttt{process\_resident\_memory\_bytes}: Accurate real-time tracking of process resident memory ($3.8479 \times 10^8~\text{bytes} \approx 384.8~\text{MiB}$), confirming that memory remains well within the 512~MiB cgroup limit.
+    \item \texttt{target\_info}: Target service metadata specifying \texttt{service\_name="bhagiratha-pond-planning"}, \texttt{host\_name="stu72\_sys4"}, \texttt{deployment\_environment="production"}, and \texttt{telemetry\_sdk\_version="1.45.1"}.
+    \item \texttt{http\_client\_duration\_milliseconds}: Latency histograms automatically generated by the OpenTelemetry HTTPX instrumentation for outbound terrain and weather provider queries.
+    \item Garbage collection and CPU metrics tracking internal runtime health.
 \end{enumerate}
 
-\subsection{Trace-Correlated Structured Logging}
+\subsection{Server Request Logs}
 
 \begin{figure}[htbp]
 \centering
 \includegraphics[width=0.95\textwidth]{figures/fig_correlated_logs.png}
-\caption{Application server log output (\texttt{/home/student/pond-project/server.log}) demonstrating structured log correlation where every log line contains the active \texttt{trace\_id} and \texttt{span\_id}.}
+\caption{Application server log output (\texttt{/home/student/pond-project/server.log}) captured on \texttt{student@stu72\_sys4}, showing incoming requests for health probes, telemetry spans, and metrics.}
 \label{fig:correlated_logs}
 \end{figure}
 
 \textbf{What is demonstrated in Figure~\ref{fig:correlated_logs}:} 
-Figure~\ref{fig:correlated_logs} shows log-trace correlation in action. Through OpenTelemetry's \texttt{LoggingInstrumentor}, all log records emitted by \texttt{bhagiratha.api}, \texttt{bhagiratha.terrain}, \texttt{bhagiratha.rainfall}, and \texttt{bhagiratha.sizing} automatically inject \texttt{[trace\_id=7b8449c25b8214fa span\_id=...]} into the log format. When diagnosing issues, an engineer can copy a Trace ID from the log file to reconstruct the full execution journey, eliminating guesswork during incident triage.
+Figure~\ref{fig:correlated_logs} displays the live execution log from \texttt{server.log} on the evaluation server. It records incoming requests dispatched to \texttt{/api/telemetry/spans?limit=50}, \texttt{/metrics}, and internal health probes. All requests are served with HTTP 200 OK statuses, demonstrating that the observability endpoints operate under low overhead and do not destabilize the container.
 
 \section{Analysis and Understanding of the Collected Data}
 
