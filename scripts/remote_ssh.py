@@ -4,7 +4,7 @@ import time
 import paramiko
 
 HOST = "10.1.75.53"
-PORT = 2248
+PORT = 2246
 USER = "student"
 PASS = "Rahul@2006"
 
