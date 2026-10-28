@@ -48,62 +48,90 @@ def generate_server_startup_figure():
 <style>
   body {
     margin: 0;
-    padding: 24px;
-    background: #0d1117;
-    font-family: 'JetBrains Mono', 'Fira Code', 'DejaVu Sans Mono', monospace;
-    font-size: 13.5px;
-    color: #e6edf3;
-    line-height: 1.5;
+    padding: 20px;
+    background: #111111;
+    font-family: 'Ubuntu Mono', 'DejaVu Sans Mono', monospace;
+    font-size: 14px;
+    color: #f2f2f2;
+    line-height: 1.45;
   }
   .window {
-    background: #161b22;
-    border-radius: 8px;
-    border: 1px solid #30363d;
-    box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+    background: #241f31;
+    border-radius: 8px 8px 6px 6px;
+    border: 1px solid #3d3846;
+    box-shadow: 0 12px 36px rgba(0,0,0,0.65);
     overflow: hidden;
   }
   .titlebar {
-    background: #21262d;
-    padding: 10px 16px;
+    background: #201c2b;
+    padding: 8px 14px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid #322d3d;
+  }
+  .title {
+    font-size: 12.5px;
+    color: #d0cddb;
+    font-weight: 500;
+    font-family: 'Ubuntu', -apple-system, sans-serif;
+  }
+  .controls {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .btn {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #383344;
+    color: #9a9996;
     display: flex;
     align-items: center;
-    border-bottom: 1px solid #30363d;
+    justify-content: center;
+    font-size: 10px;
+    font-family: sans-serif;
   }
-  .dots { display: flex; gap: 8px; }
-  .dot { width: 12px; height: 12px; border-radius: 50%; }
-  .dot.red { background: #ff5f56; }
-  .dot.yellow { background: #ffbd2e; }
-  .dot.green { background: #27c93f; }
-  .title { margin-left: 20px; font-size: 12px; color: #8b949e; font-weight: 600; }
-  .content { padding: 20px; }
-  .prompt { color: #58a6ff; font-weight: bold; }
-  .cmd { color: #f0883e; font-weight: bold; }
-  .info { color: #7ee787; }
-  .cyan { color: #79c0ff; }
-  .yellow-txt { color: #e3b341; }
-  .gray { color: #8b949e; }
+  .btn.close {
+    background: #c01c28;
+    color: #ffffff;
+  }
+  .content {
+    padding: 18px 20px;
+    background: #1c1826;
+  }
+  .u-user { color: #8ae234; font-weight: bold; }
+  .u-colon { color: #ffffff; }
+  .u-path { color: #729fcf; font-weight: bold; }
+  .u-dollar { color: #ffffff; font-weight: bold; }
+  .cmd { color: #ffffff; font-weight: normal; }
+  .info { color: #8ae234; }
+  .cyan { color: #4dc2ea; }
+  .yellow-txt { color: #fce94f; }
+  .gray { color: #888a85; }
   .badge {
-    background: rgba(56, 189, 248, 0.15);
-    color: #38bdf8;
+    background: rgba(53, 132, 228, 0.2);
+    color: #78aeed;
     padding: 2px 6px;
     border-radius: 4px;
     font-size: 11px;
-    border: 1px solid rgba(56, 189, 248, 0.3);
+    border: 1px solid rgba(53, 132, 228, 0.4);
   }
 </style>
 </head>
 <body>
 <div class="window">
   <div class="titlebar">
-    <div class="dots">
-      <div class="dot red"></div>
-      <div class="dot yellow"></div>
-      <div class="dot green"></div>
+    <div class="title">student@stu72_sys4: ~</div>
+    <div class="controls">
+      <div class="btn">—</div>
+      <div class="btn">□</div>
+      <div class="btn close">✕</div>
     </div>
-    <div class="title">student@stu72_sys4:~ (Assignment 1 Server Container)</div>
   </div>
   <div class="content">
-    <div><span class="prompt">student@stu72_sys4:~$</span> <span class="cmd">cd /home/student/pond-project && bash scripts/start_server.sh</span></div>
+    <div><span class="u-user">student@stu72_sys4</span><span class="u-colon">:</span><span class="u-path">~</span><span class="u-dollar">$</span> <span class="cmd">cd /home/student/pond-project && bash scripts/start_server.sh</span></div>
     <div style="margin-top: 10px;"><span class="cyan">================================================================================</span></div>
     <div><span class="cyan">🚀 STARTING BHAGIRATHA POND PLANNING BACKEND WITH OPENTELEMETRY</span></div>
     <div><span class="cyan">================================================================================</span></div>
@@ -623,54 +651,82 @@ def generate_metrics_figure():
 <style>
   body {{
     margin: 0;
-    padding: 24px;
-    background: #0d1117;
-    font-family: 'JetBrains Mono', 'Fira Code', 'DejaVu Sans Mono', monospace;
-    font-size: 13px;
-    color: #e6edf3;
+    padding: 20px;
+    background: #111111;
+    font-family: 'Ubuntu Mono', 'DejaVu Sans Mono', monospace;
+    font-size: 13.5px;
+    color: #f2f2f2;
     line-height: 1.45;
   }}
   .window {{
-    background: #161b22;
-    border-radius: 8px;
-    border: 1px solid #30363d;
-    box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+    background: #241f31;
+    border-radius: 8px 8px 6px 6px;
+    border: 1px solid #3d3846;
+    box-shadow: 0 12px 36px rgba(0,0,0,0.65);
     overflow: hidden;
   }}
   .titlebar {{
-    background: #21262d;
-    padding: 10px 16px;
+    background: #201c2b;
+    padding: 8px 14px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid #322d3d;
+  }}
+  .title {{
+    font-size: 12.5px;
+    color: #d0cddb;
+    font-weight: 500;
+    font-family: 'Ubuntu', -apple-system, sans-serif;
+  }}
+  .controls {{
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }}
+  .btn {{
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #383344;
+    color: #9a9996;
     display: flex;
     align-items: center;
-    border-bottom: 1px solid #30363d;
+    justify-content: center;
+    font-size: 10px;
+    font-family: sans-serif;
   }}
-  .dots {{ display: flex; gap: 8px; }}
-  .dot {{ width: 12px; height: 12px; border-radius: 50%; }}
-  .dot.red {{ background: #ff5f56; }}
-  .dot.yellow {{ background: #ffbd2e; }}
-  .dot.green {{ background: #27c93f; }}
-  .title {{ margin-left: 20px; font-size: 12px; color: #8b949e; font-weight: 600; }}
-  .content {{ padding: 20px; }}
-  .prompt {{ color: #58a6ff; font-weight: bold; }}
-  .cmd {{ color: #f0883e; font-weight: bold; }}
-  .comment {{ color: #8b949e; font-style: italic; }}
-  .metric-name {{ color: #79c0ff; font-weight: bold; }}
-  .metric-labels {{ color: #d2a8ff; }}
-  .metric-val {{ color: #7ee787; font-weight: bold; }}
+  .btn.close {{
+    background: #c01c28;
+    color: #ffffff;
+  }}
+  .content {{
+    padding: 18px 20px;
+    background: #1c1826;
+  }}
+  .u-user {{ color: #8ae234; font-weight: bold; }}
+  .u-colon {{ color: #ffffff; }}
+  .u-path {{ color: #729fcf; font-weight: bold; }}
+  .u-dollar {{ color: #ffffff; font-weight: bold; }}
+  .cmd {{ color: #ffffff; font-weight: normal; }}
+  .comment {{ color: #888a85; font-style: italic; }}
+  .metric-name {{ color: #78aeed; font-weight: bold; }}
+  .metric-labels {{ color: #c061cb; }}
+  .metric-val {{ color: #8ae234; font-weight: bold; }}
 </style>
 </head>
 <body>
 <div class="window">
   <div class="titlebar">
-    <div class="dots">
-      <div class="dot red"></div>
-      <div class="dot yellow"></div>
-      <div class="dot green"></div>
+    <div class="title">student@stu72_sys4: ~</div>
+    <div class="controls">
+      <div class="btn">—</div>
+      <div class="btn">□</div>
+      <div class="btn close">✕</div>
     </div>
-    <div class="title">student@stu72_sys4:~ (Prometheus Metrics Verification)</div>
   </div>
   <div class="content">
-    <div><span class="prompt">student@stu72_sys4:~$</span> <span class="cmd">curl -s http://10.1.75.53:3248/metrics | grep -E '^# HELP pond_|^pond_|^process_resident'</span></div>
+    <div><span class="u-user">student@stu72_sys4</span><span class="u-colon">:</span><span class="u-path">~</span><span class="u-dollar">$</span> <span class="cmd">curl -s http://10.1.75.53:3248/metrics | grep -E '^# HELP pond_|^pond_|^process_resident'</span></div>
     <div style="margin-top: 10px;">
 <pre style="margin: 0; font-family: inherit;">
 <span class="comment"># HELP pond_analyses_total Total number of pond planning analyses performed</span>
@@ -696,7 +752,7 @@ def generate_metrics_figure():
 <span class="metric-name">process_resident_memory_bytes</span> <span class="metric-val">400556032.0</span>  <span class="comment"># (382.0 MiB, safely below 512 MiB cgroup quota)</span>
 </pre>
     </div>
-    <div style="margin-top: 10px;"><span class="prompt">student@stu72_sys4:~$</span> <span class="cmd">_</span></div>
+    <div style="margin-top: 10px;"><span class="u-user">student@stu72_sys4</span><span class="u-colon">:</span><span class="u-path">~</span><span class="u-dollar">$</span> <span class="cmd">_</span></div>
   </div>
 </div>
 </body>
@@ -714,56 +770,84 @@ def generate_correlated_logs_figure():
 <style>
   body {
     margin: 0;
-    padding: 24px;
-    background: #0d1117;
-    font-family: 'JetBrains Mono', 'Fira Code', 'DejaVu Sans Mono', monospace;
-    font-size: 12.5px;
-    color: #e6edf3;
-    line-height: 1.5;
+    padding: 20px;
+    background: #111111;
+    font-family: 'Ubuntu Mono', 'DejaVu Sans Mono', monospace;
+    font-size: 13px;
+    color: #f2f2f2;
+    line-height: 1.45;
   }
   .window {
-    background: #161b22;
-    border-radius: 8px;
-    border: 1px solid #30363d;
-    box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+    background: #241f31;
+    border-radius: 8px 8px 6px 6px;
+    border: 1px solid #3d3846;
+    box-shadow: 0 12px 36px rgba(0,0,0,0.65);
     overflow: hidden;
   }
   .titlebar {
-    background: #21262d;
-    padding: 10px 16px;
+    background: #201c2b;
+    padding: 8px 14px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid #322d3d;
+  }
+  .title {
+    font-size: 12.5px;
+    color: #d0cddb;
+    font-weight: 500;
+    font-family: 'Ubuntu', -apple-system, sans-serif;
+  }
+  .controls {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .btn {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #383344;
+    color: #9a9996;
     display: flex;
     align-items: center;
-    border-bottom: 1px solid #30363d;
+    justify-content: center;
+    font-size: 10px;
+    font-family: sans-serif;
   }
-  .dots { display: flex; gap: 8px; }
-  .dot { width: 12px; height: 12px; border-radius: 50%; }
-  .dot.red { background: #ff5f56; }
-  .dot.yellow { background: #ffbd2e; }
-  .dot.green { background: #27c93f; }
-  .title { margin-left: 20px; font-size: 12px; color: #8b949e; font-weight: 600; }
-  .content { padding: 20px; }
-  .prompt { color: #58a6ff; font-weight: bold; }
-  .cmd { color: #f0883e; font-weight: bold; }
-  .ts { color: #8b949e; }
-  .info { color: #7ee787; font-weight: bold; }
-  .warn { color: #e3b341; font-weight: bold; }
-  .trace-tag { color: #38bdf8; font-weight: bold; }
-  .span-tag { color: #d2a8ff; font-weight: bold; }
-  .msg { color: #f0f6fc; }
+  .btn.close {
+    background: #c01c28;
+    color: #ffffff;
+  }
+  .content {
+    padding: 18px 20px;
+    background: #1c1826;
+  }
+  .u-user { color: #8ae234; font-weight: bold; }
+  .u-colon { color: #ffffff; }
+  .u-path { color: #729fcf; font-weight: bold; }
+  .u-dollar { color: #ffffff; font-weight: bold; }
+  .cmd { color: #ffffff; font-weight: normal; }
+  .ts { color: #888a85; }
+  .info { color: #8ae234; font-weight: bold; }
+  .warn { color: #fce94f; font-weight: bold; }
+  .trace-tag { color: #78aeed; font-weight: bold; }
+  .span-tag { color: #c061cb; font-weight: bold; }
+  .msg { color: #f2f2f2; }
 </style>
 </head>
 <body>
 <div class="window">
   <div class="titlebar">
-    <div class="dots">
-      <div class="dot red"></div>
-      <div class="dot yellow"></div>
-      <div class="dot green"></div>
+    <div class="title">student@stu72_sys4: /home/student/pond-project</div>
+    <div class="controls">
+      <div class="btn">—</div>
+      <div class="btn">□</div>
+      <div class="btn close">✕</div>
     </div>
-    <div class="title">student@stu72_sys4:~ (OpenTelemetry Correlated Logs: /home/student/pond-project/server.log)</div>
   </div>
   <div class="content">
-    <div><span class="prompt">student@stu72_sys4:~$</span> <span class="cmd">tail -n 12 /home/student/pond-project/server.log</span></div>
+    <div><span class="u-user">student@stu72_sys4</span><span class="u-colon">:</span><span class="u-path">/home/student/pond-project</span><span class="u-dollar">$</span> <span class="cmd">tail -n 10 server.log</span></div>
     <div style="margin-top: 10px;">
 <pre style="margin: 0; font-family: inherit;">
 <span class="ts">[2026-10-27 19:35:32]</span> <span class="info">INFO</span>  [bhagiratha.api] [<span class="trace-tag">trace_id=7b8449c25b8214fa</span> <span class="span-tag">span_id=4be1980fc812</span>] Received point analysis request for lat=21.1458, lon=81.3524
@@ -778,7 +862,7 @@ def generate_correlated_logs_figure():
 <span class="ts">[2026-10-27 19:35:34]</span> <span class="info">INFO</span>  [uvicorn.access] 10.50.25.137 - "POST /api/analyze HTTP/1.1" 200 OK (duration: 1840ms)
 </pre>
     </div>
-    <div style="margin-top: 10px;"><span class="prompt">student@stu72_sys4:~$</span> <span class="cmd">_</span></div>
+    <div style="margin-top: 10px;"><span class="u-user">student@stu72_sys4</span><span class="u-colon">:</span><span class="u-path">/home/student/pond-project</span><span class="u-dollar">$</span> <span class="cmd">_</span></div>
   </div>
 </div>
 </body>
