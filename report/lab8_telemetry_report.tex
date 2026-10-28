@@ -317,7 +317,7 @@ This screenshot verifies that the application server is healthy and actively exe
 \textbf{What is demonstrated in Figure~\ref{fig:ui_home}:} 
 Figure~\ref{fig:ui_home} shows the interactive map interface with a completed hydrological land area analysis. The system successfully executed D8 flow routing across the selected zone, delineated a $14.45~\text{km}^2$ catchment basin, identified the optimal runoff convergence pour point, and computed a reservoir capacity of $4,430,514~\text{m}^3$ with an overall suitability score of 89. The top navigation bar provides instant access to the integrated ``Telemetry'' dashboard.
 
-\subsection{Distributed Tracing and In-App Observability Dashboard}
+\subsection{Distributed Tracing and Observability Endpoints}
 
 \begin{figure}[htbp]
 \centering
@@ -331,46 +331,25 @@ Figure~\ref{fig:telemetry_modal} displays the live in-app telemetry dashboard mo
 
 \begin{figure}[htbp]
 \centering
-\includegraphics[width=0.95\textwidth]{figures/fig_waterfall.png}
-\caption{Span waterfall diagram of a complete point analysis request (\texttt{POST /api/analyze}), showing the hierarchical execution tree, service attribution, and timing breakdown across terrain, flow routing, rainfall, and sizing.}
-\label{fig:waterfall}
+\includegraphics[width=0.95\textwidth]{figures/fig_spans_json.png}
+\caption{Raw JSON trace spans exposition captured in browser at \url{http://10.1.75.53:3248/api/telemetry/spans}, highlighting outbound HTTPX telemetry for Open-Meteo historical weather archive queries (duration: 740.91~ms) and server execution spans.}
+\label{fig:spans_json}
 \end{figure}
 
-\textbf{What is demonstrated in Figure~\ref{fig:waterfall}:} 
-Figure~\ref{fig:waterfall} details the hierarchical breakdown of an end-to-end request:
-\begin{itemize}
-    \item \texttt{POST /api/analyze} (Root HTTP server span, 1840~ms)
-    \item \texttt{pond.analyze\_point} (Application orchestrator span, 1825~ms)
-    \item \texttt{terrain.get\_catchment} (Hydrology engine, 1140~ms)
-    \item \texttt{heavy\_job.delineate\_catchment} (PySheds flow routing in admission thread, 552~ms)
-    \item \texttt{rainfall.get\_stats} (Open-Meteo 10-year daily precipitation query, 644~ms)
-    \item \texttt{recommendation.sizing} (Rational Method hydraulic reservoir sizing, 21~ms)
-\end{itemize}
-This visualization immediately pinpoints where time is spent. External network fetching and raster manipulation consume over 97\% of the total latency, whereas numerical sizing completes in a mere 21~ms.
-
-\subsection{Domain Span Attributes and Semantic Metadata}
-
-\begin{figure}[htbp]
-\centering
-\includegraphics[width=0.95\textwidth]{figures/fig_span_attributes.png}
-\caption{Span Attribute Inspector for \texttt{pond.analyze\_point}, showcasing rich domain metadata (\texttt{terrain.area\_km2}, \texttt{recommendation.runoff\_m3}, \texttt{recommendation.capacity\_m3}, \texttt{recommendation.suitability\_score}) alongside cgroup memory metrics.}
-\label{fig:span_attributes}
-\end{figure}
-
-\textbf{What is demonstrated in Figure~\ref{fig:span_attributes}:} 
-Unlike generic APM tools that only measure response times, OpenTelemetry allows injecting custom domain semantics into spans. Figure~\ref{fig:span_attributes} demonstrates that our spans capture critical hydrological outputs: the delineated catchment area ($0.0125~\text{km}^2$), estimated annual runoff ($5517.3~\text{m}^3$), recommended reservoir volume ($3862.1~\text{m}^3$), and suitability score ($66.0/100$). Concurrently, it captures the process memory RSS ($382.0~\text{MiB}$) and cgroup limit ($512.0~\text{MiB}$), confirming that heavy jobs operate within safe memory limits.
+\textbf{What is demonstrated in Figure~\ref{fig:spans_json}:} 
+Figure~\ref{fig:spans_json} displays the raw trace span format returned by the FastAPI telemetry endpoint. Captured directly in Google Chrome, the span stream documents the distributed execution context. Notably, it highlights the outbound HTTPX span generated for Open-Meteo precipitation queries (\texttt{trace\_id="f6e03f1cf7e6b9f05eb0ecda2afe7fcb"}, \texttt{duration\_ms=740.91~ms}), recording the target URL, HTTP 200 response status, and nano-second timestamps.
 
 \subsection{Error Isolation and Validation Tracing}
 
 \begin{figure}[htbp]
 \centering
 \includegraphics[width=0.95\textwidth]{figures/fig_error_trace.png}
-\caption{Automatic error capture for an invalid client payload rejected with HTTP 422 Unprocessable Entity, isolating missing schema keys (\texttt{lat}, \texttt{lon}) in 12.4~ms without throwing uncaught server exceptions.}
+\caption{Terminal session on \texttt{student@stu72\_sys4:~\$} testing schema error isolation via \texttt{curl -i -X POST http://10.1.75.53:3248/api/analyze}, demonstrating immediate rejection with HTTP 422 Unprocessable Entity.}
 \label{fig:error_trace}
 \end{figure}
 
 \textbf{What is demonstrated in Figure~\ref{fig:error_trace}:} 
-Figure~\ref{fig:error_trace} illustrates how OpenTelemetry handles client validation failures. When a request submitted mismatched keys (\texttt{latitude} instead of \texttt{lat}), FastAPI rejected the request with HTTP 422. The trace recorded the \texttt{ERROR} status, the client IP (\texttt{10.50.25.137}), duration (12.4~ms), and exception details without producing noisy unhandled traceback logs in the server console.
+Figure~\ref{fig:error_trace} illustrates how the system isolates client errors. When an invalid JSON payload was submitted with mismatched coordinate keys (\texttt{latitude} and \texttt{longitude} instead of \texttt{lat} and \texttt{lon}), the FastAPI server immediately returned HTTP 422 Unprocessable Entity with a 236-byte error descriptor explaining that \texttt{lat} and \texttt{lon} are required fields. The request was rejected in under 15~ms without initiating expensive terrain elevation downloads or crashing backend workers.
 
 \subsection{Prometheus Metrics Verification}
 
