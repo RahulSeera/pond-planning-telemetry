@@ -41,7 +41,7 @@
     linkcolor=NavyBlue,
     citecolor=TealAccent,
     urlcolor=NavyBlue,
-    pdfauthor={Rahul Seera},
+    pdfauthor={Roll No. 12341980},
     pdftitle={Lab 8: OpenTelemetry Instrumentation & Observability Analysis - Bhagiratha}
 }
 
@@ -52,16 +52,16 @@
 \renewcommand{\footrulewidth}{0.4pt}
 \fancyhead[L]{\small\sffamily\bfseries\color{NavyBlue}IIT Bhilai $\cdot$ Department of Computer Science \& Engineering}
 \fancyhead[R]{\small\sffamily\color{SlateMuted}Cloud \& Distributed Systems -- Lab 8}
-\fancyfoot[L]{\footnotesize\sffamily\color{SlateMuted}Author: Rahul Seera (12341980)}
-\fancyfoot[C]{\footnotesize\sffamily\color{SlateMuted}\texttt{seerav@iitbhilai.ac.in}}
+\fancyfoot[L]{\footnotesize\sffamily\color{SlateMuted}Roll Number: 12341980}
+\fancyfoot[C]{}
 \fancyfoot[R]{\footnotesize\sffamily\bfseries\color{NavyBlue}Page \thepage\ of \pageref{LastPage}}
 
 \fancypagestyle{plain}{
     \fancyhf{}
     \renewcommand{\headrulewidth}{0pt}
     \renewcommand{\footrulewidth}{0.4pt}
-    \fancyfoot[L]{\footnotesize\sffamily\color{SlateMuted}Author: Rahul Seera (12341980)}
-    \fancyfoot[C]{\footnotesize\sffamily\color{SlateMuted}\texttt{seerav@iitbhilai.ac.in}}
+    \fancyfoot[L]{\footnotesize\sffamily\color{SlateMuted}Roll Number: 12341980}
+    \fancyfoot[C]{}
     \fancyfoot[R]{\footnotesize\sffamily\bfseries\color{NavyBlue}Page \thepage\ of \pageref{LastPage}}
 }
 
@@ -127,29 +127,22 @@
 
 \begin{document}
 
-% --- Custom Header Block ---
+% --- Header Block ---
 \begin{center}
     {\LARGE\sffamily\bfseries\color{NavyBlue} Engineering Report: Full-Stack OpenTelemetry Observability}\\[0.3em]
-    {\large\sffamily\bfseries\color{TealAccent} Distributed Tracing, Runtime Telemetry \& Resource Governance in Bhagiratha}\\[0.8em]
+    {\large\sffamily\bfseries\color{TealAccent} Distributed Tracing, Runtime Telemetry \& Resource Governance in Bhagiratha}\\[0.9em]
 
-    \begin{tcolorbox}[colback=CardBg,colframe=BorderGray,arc=4pt,boxrule=0.6pt,left=10pt,right=10pt,top=8pt,bottom=8pt]
-        \begin{minipage}[t]{0.48\textwidth}
-            \textbf{Student Author:} Rahul Seera\\
-            \textbf{Roll Number:} 12341980\\
-            \textbf{Academic Email:} \href{mailto:seerav@iitbhilai.ac.in}{\texttt{seerav@iitbhilai.ac.in}}\\
-            \textbf{Institution:} Indian Institute of Technology Bhilai
-        \end{minipage}
-        \hfill
-        \begin{minipage}[t]{0.48\textwidth}
-            \textbf{Live Application:} \href{http://10.1.75.53:3246/}{\texttt{http://10.1.75.53:3246/}}\\
-            \textbf{GitHub Repository:} \href{https://github.com/RahulSeera/pond-planning-telemetry}{\texttt{RahulSeera/pond-planning-telemetry}}\\
-            \textbf{Hosting Environment:} \texttt{stu72\_sys2} (Port 3000 $\rightarrow$ Ext. 3246)\\
-            \textbf{Date of Submission:} October 2026
-        \end{minipage}
-    \end{tcolorbox}
+    {\normalsize\sffamily
+    \textbf{Roll Number:} 12341980\\[0.35em]
+    \textbf{Institution:} Indian Institute of Technology Bhilai\\[0.35em]
+    \textbf{Live Application:} \href{http://10.1.75.53:3246/}{\texttt{http://10.1.75.53:3246/}}\\[0.35em]
+    \textbf{GitHub Repository:} \href{https://github.com/RahulSeera/pond-planning-telemetry}{\texttt{https://github.com/RahulSeera/pond-planning-telemetry}}\\[0.35em]
+    \textbf{Deployment Environment:} \texttt{stu72\_sys2} (Port 3000 $\rightarrow$ External 3246)\\[0.35em]
+    \textbf{Date of Submission:} October 2026
+    }
 \end{center}
 
-\vspace{-0.5em}
+\vspace{0.6em}
 
 \begin{abstract}
 \noindent Modern geospatial web architectures execute complex numerical workflows that fan out across external third-party elevation services, decadal meteorological archives, and CPU-intensive numerical terrain solvers. When deployed on resource-constrained micro-containers (such as a 512~MiB Linux cgroup threshold), traditional static log files fail to provide timely visibility into tail latency, memory spikes, and silent fallback degradations. This report documents the design, implementation, and empirical analysis of an end-to-end OpenTelemetry (OTel) observability layer engineered for \textbf{Bhagiratha: AI-based Village Pond Planning System}. We instrumented the FastAPI ASGI application with the OpenTelemetry Python SDK (v1.45.1), integrating automated HTTP ingress/egress tracing, fine-grained domain spans around D8 hydrological flow routing, an in-memory streaming span recorder, Prometheus metric instruments, and trace-correlated structured logging. The instrumented system is hosted live on container \texttt{stu72\_sys2} (\texttt{http://10.1.75.53:3246/}). Through empirical measurements and genuine screenshot captures, we demonstrate how OpenTelemetry attributes latency bottlenecks, guarantees memory safety beneath container cgroup thresholds, accelerates mean time to resolution (MTTR), and provides operational transparency for distributed engineering.
