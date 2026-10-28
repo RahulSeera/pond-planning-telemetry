@@ -46,25 +46,6 @@
 
 \maketitle
 
-\vspace{-0.5em}
-\begin{center}
-\fbox{\parbox{0.96\textwidth}{
-\centering
-\textbf{Live Application Website:}\\[0.2em]
-\Large \href{http://10.1.75.53:3246/}{\textbf{\texttt{http://10.1.75.53:3246/}}}\\[0.5em]
-\normalsize
-\textbf{GitHub Repository:}\\[0.15em]
-\href{https://github.com/RahulSeera/pond-planning-telemetry}{\textbf{\texttt{https://github.com/RahulSeera/pond-planning-telemetry}}}\\[0.5em]
-\small
-\textbf{SSH Deployment Host:} \texttt{ssh -p 2246 student@10.1.75.53} (Port 3000 $\rightarrow$ External 3246)\\[0.25em]
-\textbf{Interactive Telemetry Modal:} \href{http://10.1.75.53:3246/}{\texttt{http://10.1.75.53:3246/}} (Click ``Telemetry'' in Header)\\[0.25em]
-\textbf{Spans JSON API:} \href{http://10.1.75.53:3246/api/telemetry/spans}{\texttt{/api/telemetry/spans}} \quad $|$ \quad
-\textbf{Prometheus Live Metrics:} \href{http://10.1.75.53:3246/metrics}{\texttt{/metrics}}\\[0.25em]
-\textbf{Diagnostic Status:} \href{http://10.1.75.53:3246/api/telemetry/status}{\texttt{/api/telemetry/status}}
-}}
-\end{center}
-\vspace{0.8em}
-
 \begin{abstract}
 This report presents the end-to-end integration and evaluation of OpenTelemetry in the AI-Based Village Pond Planning System (Bhagiratha). The system integrates digital elevation models (SRTM), D8 hydrological flow routing via PySheds, historical precipitation analysis via Open-Meteo, and multi-factor reservoir sizing. We instrumented the backend services with the OpenTelemetry Python SDK, generating distributed traces, domain and system metrics, and trace-correlated logs. Telemetry data is exported over standard OTLP/HTTP to an observability backend (OpenTelemetry Collector, Tempo, Prometheus, Loki, and Grafana) and made inspectable via a native in-app dashboard. The collected data is analyzed to attribute latency bottlenecks, monitor memory dynamics on a resource-constrained 512~MiB Linux cgroup container, diagnose dependency failures, and demonstrate the practical utility of observability for distributed engineering.
 \end{abstract}
